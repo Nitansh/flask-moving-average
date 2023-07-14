@@ -15,7 +15,7 @@ COPY . /app
 EXPOSE 5000
 ENV PORT 5000
 
-HEALTHCHECK CMD curl --fail http://localhost:5000/healthcheck || exit 1 
+HEALTHCHECK --timeout=3s --retries=2 CMD curl --fail http://localhost:5000/healthcheck || exit 1 
 
 # configure the container to run in an executed manner
 ENTRYPOINT [ "python3" ]
