@@ -4,9 +4,12 @@ from jugaad_data.nse import stock_csv, stock_df
 from finta import TA
 from waitress import serve
 
+from mcap import MCAP, COMPANY_NAME
+
 app = Flask(__name__)
 
-PRICE_DIFF_PERCENTAGE = .005
+PRICE_DIFF_PERCENTAGE = .01
+MCAP_THRESHOLD = 100
 
 @app.route('/healthcheck')
 def get_healt_check():
@@ -31,6 +34,8 @@ def get_dma():
     response['symbol'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
     response['rsi'] = rsi.iloc[-1]
+    response['mcap'] = MCAP.get(stock, 0)
+    response['name'] = COMPANY_NAME.get(stock, stock)
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
@@ -56,10 +61,12 @@ def get_dma_price_diff():
     response['symbol'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
     response['rsi'] = rsi.iloc[-1]
+    response['mcap'] = MCAP.get(stock, 0)
+    response['name'] = COMPANY_NAME.get(stock, stock)
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
-    if response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and abs(response['DMA_20'] - response['DMA_50']) < response['price'] * PRICE_DIFF_PERCENTAGE and abs(response['DMA_50'] - response['DMA_100']) < response['price'] * PRICE_DIFF_PERCENTAGE:
+    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and abs(response['DMA_20'] - response['DMA_50']) < (response['price'] * PRICE_DIFF_PERCENTAGE) and abs(response['DMA_50'] - response['DMA_100']) < (response['price'] * PRICE_DIFF_PERCENTAGE):
         response['isBullish'] = 'true'
 
     return jsonify( response )
