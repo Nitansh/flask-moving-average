@@ -8,7 +8,8 @@ from mcap import MCAP, COMPANY_NAME
 
 app = Flask(__name__)
 
-PRICE_DIFF_PERCENTAGE = .01
+PRICE_DIFF_PERCENTAGE = .002
+PRICE_DIFF_BEARISH_PERCENTAGE = .05
 MCAP_THRESHOLD = 100
 
 @app.route('/healthcheck')
@@ -46,10 +47,12 @@ def get_dma():
 
 
 @app.route('/price_diff')
-def get_dma_price_diff():
+def get_dma_price_diff_bullish():
     response = {}
     stock = request.args.get('symbol')
     dma_list = request.args.get('dma').split(',')
+    price_diff = request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE )
+    price_diff_bearish = request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )
     one_day_before = datetime.now() + timedelta(days=-1)
     year = one_day_before.year
     month = one_day_before.month
@@ -66,8 +69,11 @@ def get_dma_price_diff():
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
-    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and abs(response['DMA_20'] - response['DMA_50']) < (response['price'] * PRICE_DIFF_PERCENTAGE) and abs(response['DMA_50'] - response['DMA_100']) < (response['price'] * PRICE_DIFF_PERCENTAGE):
+    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['DMA_20'] - response['DMA_50']) < (response['price'] * price_diff) and abs(response['DMA_50'] - response['DMA_100']) < (response['price'] * price_diff):
         response['isBullish'] = 'true'
+
+    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['price'] - response['DMA_20']) > (response['price'] * price_diff_bearish) and abs(response['DMA_20'] - response['DMA_50']) > (response['DMA_20'] * price_diff_bearish):
+        response['isBearish'] = 'true'
 
     return jsonify( response )
     
