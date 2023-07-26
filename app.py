@@ -8,9 +8,10 @@ from mcap import MCAP, COMPANY_NAME
 
 app = Flask(__name__)
 
-PRICE_DIFF_PERCENTAGE = .002
-PRICE_DIFF_BEARISH_PERCENTAGE = .05
-MCAP_THRESHOLD = 100
+PRICE_DIFF_PERCENTAGE = 1
+PRICE_DIFF_BEARISH_PERCENTAGE = 5
+MCAP_THRESHOLD = 100000
+TIME_DELTA = -1
 
 @app.route('/healthcheck')
 def get_healt_check():
@@ -51,9 +52,10 @@ def get_dma_price_diff_bullish():
     response = {}
     stock = request.args.get('symbol')
     dma_list = request.args.get('dma').split(',')
-    price_diff = request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE )
-    price_diff_bearish = request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )
-    one_day_before = datetime.now() + timedelta(days=-1)
+    price_diff = int( request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE ) ) * .001 
+    price_diff_bearish = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
+    time_delta = int( request.args.get('timeDelta', 0 )) * TIME_DELTA
+    one_day_before = datetime.now() + timedelta(days=time_delta)
     year = one_day_before.year
     month = one_day_before.month
     day = one_day_before.day
