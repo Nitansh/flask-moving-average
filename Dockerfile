@@ -15,7 +15,7 @@ COPY . /app
 EXPOSE 5000
 ENV PORT 5000
 
-HEALTHCHECK --timeout=3s --retries=2 CMD curl --fail http://localhost:5000/healthcheck || exit 1 
+HEALTHCHECK CMD curl --fail -m 1 "http://localhost:5000/price_diff?symbol=ZYDUSLIFE&dma=DMA_20,DMA_50,DMA_100" || exit 1 
 
 # configure the container to run in an executed manner
 ENTRYPOINT [ "python3" ]
