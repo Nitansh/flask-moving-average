@@ -1,12 +1,13 @@
 from flask import Flask, jsonify, request
 from datetime import date, timedelta, datetime
-from jugaad_data.nse import stock_csv, stock_df
+from jugaad_data.nse import stock_df, NSELive
 from finta import TA
 from waitress import serve
 
 from mcap import MCAP, COMPANY_NAME
 
 app = Flask(__name__)
+n = NSELive()
 
 PRICE_DIFF_PERCENTAGE = 1
 PRICE_DIFF_BEARISH_PERCENTAGE = 5
@@ -19,6 +20,18 @@ def get_healt_check():
     df = stock_df(symbol='RELIANCE', from_date=date(2022,7,12), to_date=date(2023,7,12), series="EQ")
     return ''
 
+@app.route('/live')
+def get_live_stock():
+    symbol = request.args.get('symbol')
+    if ( symbol ):
+        stockData = n.stock_quote(symbol)
+        return jsonify({
+            'symbol' : symbol,
+            'industry' : stockData.get('info').get('industry'),
+            'currentPrice' : stockData['priceInfo']['lastPrice']
+        })
+    else:
+        return jsonify({})
 
 @app.route('/')
 def get_dma():
