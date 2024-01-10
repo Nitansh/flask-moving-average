@@ -11,7 +11,7 @@ n = NSELive()
 
 PRICE_DIFF_PERCENTAGE = 1
 PRICE_DIFF_BEARISH_PERCENTAGE = 5
-MCAP_THRESHOLD = 100000
+MCAP_THRESHOLD = 10
 TIME_DELTA = -1
 
 @app.route('/healthcheck')
@@ -47,6 +47,7 @@ def get_dma():
     rsi = TA.RSI(df)
     
     response['symbol'] = stock
+    response['id'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
     response['rsi'] = rsi.iloc[-1]
     response['mcap'] = MCAP.get(stock, 0)
@@ -54,7 +55,7 @@ def get_dma():
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
-    if response['rsi'] > 30 and response['rsi'] < 70 and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50'] and response['price'] > response['DMA_100'] and response['price'] > response['DMA_200']:
+    if response['rsi'] > 20 and response['rsi'] < 70 and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50'] and response['price'] > response['DMA_100'] and response['price'] > response['DMA_200']:
         response['isBullish'] = 'true'
 
     return jsonify( response )
@@ -77,6 +78,7 @@ def get_dma_price_diff_bullish():
     rsi = TA.RSI(df)
 
     response['symbol'] = stock
+    response['id'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
     response['rsi'] = rsi.iloc[-1]
     response['mcap'] = MCAP.get(stock, 0)
