@@ -71,6 +71,7 @@ def get_dma():
         response['mcap'] = MCAP.get(stock, 0)
         response['name'] = COMPANY_NAME.get(stock, stock)
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
+        response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
         for item in dma_list:
             response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
         if response['rsi'] > 20 and response['rsi'] < 70 and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50'] and response['price'] > response['DMA_100'] and response['price'] > response['DMA_200']:
@@ -105,6 +106,7 @@ def get_dma_price_diff_bullish():
     response['mcap'] = MCAP.get(stock, 0)
     response['name'] = COMPANY_NAME.get(stock, stock)
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
+    response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
     if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['DMA_20'] - response['DMA_50']) < (response['price'] * price_diff) and abs(response['DMA_50'] - response['DMA_100']) < (response['price'] * price_diff):
