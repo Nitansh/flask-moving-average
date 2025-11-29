@@ -164,6 +164,43 @@ def get_dma():
     return jsonify( response )
 
 
+@app.route('/history')
+def get_history():
+    try:
+        symbol = request.args.get('symbol')
+        days = int(request.args.get('days', 365))
+        
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=days)
+        
+        df = custom_stock_df(
+            symbol=symbol, 
+            from_date=from_date.date(), 
+            to_date=to_date.date(), 
+            series="EQ"
+        )
+        
+        # Format for frontend chart
+        # Recharts expects array of objects: [{date: '...', price: 100}, ...]
+        history_data = []
+        for index, row in df.iterrows():
+            history_data.append({
+                'date': row['DATE'].strftime('%Y-%m-%d'),
+                'price': row['CLOSE'],
+                'open': row['OPEN'],
+                'high': row['HIGH'],
+                'low': row['LOW'],
+                'volume': row['VOLUME']
+            })
+            
+        return jsonify({
+            'symbol': symbol,
+            'data': history_data
+        })
+    except Exception as e:
+        print(f"Error fetching history for {symbol}: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/price_diff')
 def get_dma_price_diff_bullish():
     response = {}
