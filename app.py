@@ -1,15 +1,97 @@
 from flask import Flask, jsonify, request
 from datetime import date, timedelta, datetime
-from jugaad_data.nse import stock_df, NSELive
+from jugaad_data.nse import NSELive
+from jugaad_data.nse.history import NSEHistory, stock_select_headers, stock_final_headers, stock_dtypes
 from finta import TA
 from waitress import serve
 import pandas as pd
 import sys
+import requests
 
 from mcap import MCAP, COMPANY_NAME
 
+class CustomNSELive(NSELive):
+    def __init__(self):
+        self.base_url = "https://www.nseindia.com/api"
+        self.page_url = "https://www.nseindia.com/get-quotes/equity?symbol=INFY"
+        self._routes = {
+            "stock_meta": "/equity-meta-info",
+            "stock_quote": "/quote-equity",
+            "stock_derivative_quote": "/quote-derivative",
+            "market_status": "/marketStatus",
+            "chart_data": "/chart-databyindex",
+            "market_turnover": "/market-turnover",
+            "equity_derivative_turnover": "/equity-stockIndices",
+            "all_indices": "/allIndices",
+            "live_index": "/equity-stockIndices",
+            "index_option_chain": "/option-chain-indices",
+        }
+        
+        self.s = requests.Session()
+        h = {
+            "Host": "www.nseindia.com",
+            "Referer": "https://www.nseindia.com/get-quotes/equity?symbol=INFY",
+            "X-Requested-With": "XMLHttpRequest",
+            "pragma": "no-cache",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "priority": "u=0, i",
+            "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+        self.s.headers.update(h)
+        self.s.get(self.page_url)
+
+class CustomNSEHistory(NSEHistory):
+    def __init__(self):
+        # Call parent init first to get all methods
+        super().__init__()
+        # Now override headers with our custom ones
+        self.headers = {
+            "Host": "www.nseindia.com",
+            "Referer": "https://www.nseindia.com/get-quotes/equity?symbol=INFY",
+            "X-Requested-With": "XMLHttpRequest",
+            "pragma": "no-cache",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "priority": "u=0, i",
+            "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+        # Update session headers
+        self.s.headers.update(self.headers)
+
+def custom_stock_df(symbol, from_date, to_date, series="EQ"):
+    h = CustomNSEHistory()
+    raw = h.stock_raw(symbol, from_date, to_date, series)
+    df = pd.DataFrame(raw)[stock_select_headers]
+    df.columns = stock_final_headers
+    for i, h in enumerate(stock_final_headers):
+        df[h] = df[h].apply(stock_dtypes[i])
+    return df
+
 app = Flask(__name__)
-n = NSELive()
+n = CustomNSELive()
 pd.options.mode.copy_on_write = True
 
 PRICE_DIFF_PERCENTAGE = 1
@@ -34,7 +116,7 @@ def get_live_symbol_df( df ):
 @app.route('/healthcheck')
 def get_healt_check():
     print("in Health Check")
-    df = stock_df(symbol='RELIANCE', from_date=date(2022,7,12), to_date=date(2023,7,12), series="EQ")
+    df = custom_stock_df(symbol='RELIANCE', from_date=date(2022,7,12), to_date=date(2023,7,12), series="EQ")
     return str(df.iloc[-1]['CLOSE'])
 
 @app.route('/live')
@@ -60,7 +142,7 @@ def get_dma():
         year = one_day_before.year
         month = one_day_before.month
         day = one_day_before.day
-        df = stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+        df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
         df = df.iloc[::-1]
         df = df._append( get_live_symbol_df(df.iloc[0]))
         rsi = TA.RSI(df)
@@ -94,7 +176,7 @@ def get_dma_price_diff_bullish():
     year = one_day_before.year
     month = one_day_before.month
     day = one_day_before.day
-    df = stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+    df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
     df = df.iloc[::-1]
     df = df._append( get_live_symbol_df(df.iloc[0]))
     rsi = TA.RSI(df)

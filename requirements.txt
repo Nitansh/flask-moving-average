@@ -13,7 +13,7 @@ Jinja2==2.11.3
 jugaad-data==0.24
 markup==0.2
 MarkupSafe==2.0.1
-pandas==2.0.3
+pandas>=2.0.3
 python-dateutil==2.8.2
 pytz==2023.3
 requests==2.31.0
