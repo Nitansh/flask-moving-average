@@ -91,7 +91,7 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
     return df
 
 app = Flask(__name__)
-n = CustomNSELive()
+# n = CustomNSELive() # Removed global instance
 pd.options.mode.copy_on_write = True
 
 PRICE_DIFF_PERCENTAGE = 1
@@ -102,6 +102,7 @@ TIME_DELTA = -1
 
 def get_live_symbol_df( df ):
     try:
+        n = CustomNSELive()
         stockData = n.stock_quote(df['SYMBOL'])
         df['DATE'] = df['DATE']+ timedelta(days=1)
         df['OPEN'] = stockData['priceInfo']['open']
@@ -109,7 +110,8 @@ def get_live_symbol_df( df ):
         df['LTP'] = stockData['priceInfo']['lastPrice']
         df['CLOSE'] = stockData['priceInfo']['lastPrice']
         df['VWAP'] = stockData['priceInfo']['vwap']
-    except:
+    except Exception as e:
+        print(f"Error in get_live_symbol_df for {df.get('SYMBOL', 'Unknown')}: {e}")
         pass
     return df
 
@@ -122,13 +124,19 @@ def get_healt_check():
 @app.route('/live')
 def get_live_stock():
     symbol = request.args.get('symbol')
+    print(f"DEBUG: /live request for symbol: {symbol}")
     if ( symbol ):
-        stockData = n.stock_quote(symbol)
-        return jsonify({
-            'symbol' : symbol,
-            'industry' : stockData.get('info').get('industry'),
-            'currentPrice' : stockData['priceInfo']['lastPrice']
-        })
+        try:
+            n = CustomNSELive()
+            stockData = n.stock_quote(symbol)
+            return jsonify({
+                'symbol' : symbol,
+                'industry' : stockData.get('info').get('industry'),
+                'currentPrice' : stockData['priceInfo']['lastPrice']
+            })
+        except Exception as e:
+            print(f"Error fetching live stock for {symbol}: {e}")
+            return jsonify({'error': str(e)}), 500
     else:
         return jsonify({})
 
@@ -137,6 +145,7 @@ def get_dma():
     response = {}
     try:
         stock = request.args.get('symbol')
+        print(f"DEBUG: / (DMA) request for symbol: {stock}")
         dma_list = request.args.get('dma').split(',')
         one_day_before = datetime.now() + timedelta(days=-1)
         year = one_day_before.year
@@ -158,8 +167,9 @@ def get_dma():
             response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
         if response['rsi'] > 20 and response['rsi'] < 70 and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50'] and response['price'] > response['DMA_100'] and response['price'] > response['DMA_200']:
             response['isBullish'] = 'true'
-    except:
+    except Exception as e:
         print( "Error occurred in "+stock)
+        print(e)
 
     return jsonify( response )
 
