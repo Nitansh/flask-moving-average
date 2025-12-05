@@ -50,7 +50,7 @@ class CustomNSELive(NSELive):
             "sec-fetch-site": "same-origin",
             "User-Agent": random.choice(self.user_agents),
             "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
