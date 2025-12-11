@@ -11,6 +11,11 @@ import requests
 import random
 from mcap import MCAP, COMPANY_NAME
 
+import os
+import certifi
+os.environ['SSL_CERT_FILE'] = certifi.where()
+import yfinance as yf
+
 class CustomNSELive(NSELive):
     def __init__(self):
         self.base_url = "https://www.nseindia.com/api"
@@ -58,43 +63,43 @@ class CustomNSELive(NSELive):
         self.s.headers.update(h)
         self.s.get(self.page_url)
 
-class CustomNSEHistory(NSEHistory):
-    def __init__(self):
-        # Call parent init first to get all methods
-        super().__init__()
-        # Now override headers with our custom ones
-        self.headers = {
-            "Host": "www.nseindia.com",
-            "Referer": "https://www.nseindia.com/get-quotes/equity?symbol=INFY",
-            "X-Requested-With": "XMLHttpRequest",
-            "pragma": "no-cache",
-            "sec-fetch-dest": "document",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-site": "none",
-            "sec-fetch-user": "?1",
-            "upgrade-insecure-requests": "1",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Encoding": "gzip, deflate",
-            "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "priority": "u=0, i",
-            "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-        }
-        # Update session headers
-        self.s.headers.update(self.headers)
+import yfinance as yf
 
+# Replaced CustomNSEHistory with yfinance logic
 def custom_stock_df(symbol, from_date, to_date, series="EQ"):
-    h = CustomNSEHistory()
-    raw = h.stock_raw(symbol, from_date, to_date, series)
-    df = pd.DataFrame(raw)[stock_select_headers]
-    df.columns = stock_final_headers
-    for i, h in enumerate(stock_final_headers):
-        df[h] = df[h].apply(stock_dtypes[i])
-    return df
+    try:
+        ticker = f"{symbol}.NS"
+        print(f"Downloading data for {ticker} from {from_date} to {to_date}")
+        df = yf.download(ticker, start=from_date, end=to_date, progress=False)
+        
+        if df.empty:
+            print(f"No data found for {ticker}")
+            return pd.DataFrame()
+
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df.reset_index()
+        
+        # Rename columns to match expected format
+        # YFinance returns Date, Open, High, Low, Close, Adj Close, Volume
+        df = df.rename(columns={
+            'Date': 'DATE',
+            'Open': 'OPEN',
+            'High': 'HIGH',
+            'Low': 'LOW',
+            'Close': 'CLOSE',
+            'Volume': 'VOLUME'
+        })
+        
+        # Ensure we have the required columns for downstream logic (finta expects lowercase but we can keep uppercase if consistent)
+        # The original code mapped to stock_final_headers which were uppercase.
+        
+        return df
+    except Exception as e:
+        print(f"Error in custom_stock_df for {symbol}: {e}")
+        return pd.DataFrame()
 
 app = Flask(__name__)
 # n = CustomNSELive() # Removed global instance
