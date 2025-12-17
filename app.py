@@ -227,8 +227,11 @@ def get_dma_price_diff_bullish():
     response = {}
     stock = request.args.get('symbol')
     dma_list = request.args.get('dma').split(',')
-    price_diff = int( request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE ) ) * .001 
-    price_diff_bearish = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
+    price_diff_val = int( request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE ) ) * .01 
+    price_diff_bearish_val = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
+    
+    print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
+
     time_delta = int( request.args.get('timeDelta', 0 )) * TIME_DELTA
     one_day_before = datetime.now() + timedelta(days=time_delta)
     year = one_day_before.year
@@ -249,11 +252,33 @@ def get_dma_price_diff_bullish():
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
     for item in dma_list:
         response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
-    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['DMA_20'] - response['DMA_50']) < (response['price'] * price_diff) and abs(response['DMA_50'] - response['DMA_100']) < (response['price'] * price_diff):
-        response['isBullish'] = 'true'
+    
+    # Debug Logic
+    dma20 = response.get('DMA_20', 0)
+    dma50 = response.get('DMA_50', 0)
+    dma100 = response.get('DMA_100', 0)
+    price = response['price']
 
-    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['price'] - response['DMA_20']) > (response['price'] * price_diff_bearish) and abs(response['DMA_20'] - response['DMA_50']) > (response['DMA_20'] * price_diff_bearish):
+    # Bullish Condition Debug
+    cond1 = response['mcap'] > MCAP_THRESHOLD
+    cond2 = price > dma20 and price > dma50 and price > dma100
+    diff1 = abs(dma20 - dma50)
+    limit1 = (price * price_diff_val)
+    cond3 = diff1 < limit1
+    diff2 = abs(dma50 - dma100)
+    limit2 = (price * price_diff_val)
+    cond4 = diff2 < limit2
+    
+    if cond1 and cond2 and cond3 and cond4:
+        response['isBullish'] = 'true'
+        print(f"MATCH BULLISH: {stock}")
+    else:
+        # print(f"FAIL BULLISH {stock}: MCAP={cond1} PRICE>DMA={cond2} DIFF1({diff1:.2f}<{limit1:.2f})={cond3} DIFF2({diff2:.2f}<{limit2:.2f})={cond4}")
+        pass
+
+    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['price'] - response['DMA_20']) > (response['price'] * price_diff_bearish_val) and abs(response['DMA_20'] - response['DMA_50']) > (response['DMA_20'] * price_diff_bearish_val):
         response['isBearish'] = 'true'
+        print(f"MATCH BEARISH: {stock}")
 
     return jsonify( response )
     
