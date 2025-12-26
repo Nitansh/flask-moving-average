@@ -163,7 +163,16 @@ def get_dma():
         month = one_day_before.month
         day = one_day_before.day
         df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+        if df.empty:
+            print(f"Skipping {stock}: No invalid historical data found.")
+            return jsonify({})
+            
         df = df.iloc[::-1]
+        
+        # Double check if reversal made it empty (unlikely but safe)
+        if df.empty:
+            return jsonify({})
+            
         df = df._append( get_live_symbol_df(df.iloc[0]))
         rsi = TA.RSI(df)
         response['symbol'] = stock
@@ -230,16 +239,21 @@ def get_dma_price_diff_bullish():
     price_diff_val = int( request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE ) ) * .01 
     price_diff_bearish_val = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
     
-    print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
-
     time_delta = int( request.args.get('timeDelta', 0 )) * TIME_DELTA
     one_day_before = datetime.now() + timedelta(days=time_delta)
     year = one_day_before.year
     month = one_day_before.month
     day = one_day_before.day
     df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+    if df.empty:
+        print(f"Skipping {stock}: No invalid historical data found.")
+        return jsonify({})
+
     df = df.iloc[::-1]
     df = df._append( get_live_symbol_df(df.iloc[0]))
+    
+    print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
+
     rsi = TA.RSI(df)
 
     response['symbol'] = stock
