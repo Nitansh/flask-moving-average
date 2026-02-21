@@ -16,54 +16,12 @@ import certifi
 os.environ['SSL_CERT_FILE'] = certifi.where()
 import yfinance as yf
 
-class CustomNSELive(NSELive):
-    def __init__(self):
-        self.base_url = "https://www.nseindia.com/api"
-        self.page_url = "https://www.nseindia.com/get-quotes/equity?symbol=INFY"
-        self._routes = {
-            "stock_meta": "/equity-meta-info",
-            "stock_quote": "/quote-equity",
-            "stock_derivative_quote": "/quote-derivative",
-            "market_status": "/marketStatus",
-            "chart_data": "/chart-databyindex",
-            "market_turnover": "/market-turnover",
-            "equity_derivative_turnover": "/equity-stockIndices",
-            "all_indices": "/allIndices",
-            "live_index": "/equity-stockIndices",
-            "index_option_chain": "/option-chain-indices",
-        }
-        
-        # List of User-Agents to rotate
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0"
-        ]
-        
-        self.s = requests.Session()
-        h = {
-            "Host": "www.nseindia.com",
-            "Referer": "https://www.nseindia.com/get-quotes/equity?symbol=SBIN",
-            "X-Requested-With": "XMLHttpRequest",
-            "pragma": "no-cache",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "User-Agent": random.choice(self.user_agents),
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate",
-            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-        self.s.headers.update(h)
-        self.s.get(self.page_url)
 
-import yfinance as yf
+# Valid headers for yfinance
+YF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 
 # Replaced CustomNSEHistory with yfinance logic
 def custom_stock_df(symbol, from_date, to_date, series="EQ"):
@@ -93,16 +51,13 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
             'Volume': 'VOLUME'
         })
         
-        # Ensure we have the required columns for downstream logic (finta expects lowercase but we can keep uppercase if consistent)
-        # The original code mapped to stock_final_headers which were uppercase.
-        
+        df['SYMBOL'] = symbol
         return df
     except Exception as e:
         print(f"Error in custom_stock_df for {symbol}: {e}")
         return pd.DataFrame()
 
 app = Flask(__name__)
-# n = CustomNSELive() # Removed global instance
 pd.options.mode.copy_on_write = True
 
 PRICE_DIFF_PERCENTAGE = 1
@@ -110,17 +65,33 @@ PRICE_DIFF_BEARISH_PERCENTAGE = 5
 MCAP_THRESHOLD = 10
 TIME_DELTA = -1
 
-
-def get_live_symbol_df( df ):
+def get_live_symbol_df( df, symbol ):
     try:
-        n = CustomNSELive()
-        stockData = n.stock_quote(df['SYMBOL'])
+        # Using yfinance for live data
+        ticker_symbol = f"{symbol}.NS"
+        ticker = yf.Ticker(ticker_symbol)
+        
+        # Use fast_info for price data as it's faster
+        fast_info = ticker.fast_info
+        last_price = fast_info.last_price
+        
+        # fallback if last_price is missing, though unlikely
+        if last_price is None: 
+             # Try info as backup
+             last_price = ticker.info.get('currentPrice', 0)
+
+        # For OPEN, we might need info or fast_info
+        open_price = fast_info.open
+        if open_price is None:
+            open_price = ticker.info.get('open', 0)
+
         df['DATE'] = df['DATE']+ timedelta(days=1)
-        df['OPEN'] = stockData['priceInfo']['open']
+        df['OPEN'] = open_price
         df['PREV. CLOSE'] = df['CLOSE']
-        df['LTP'] = stockData['priceInfo']['lastPrice']
-        df['CLOSE'] = stockData['priceInfo']['lastPrice']
-        df['VWAP'] = stockData['priceInfo']['vwap']
+        df['LTP'] = last_price
+        df['CLOSE'] = last_price
+        df['VWAP'] = last_price # Approx as yf doesn't provide vwap easily
+        
     except Exception as e:
         print(f"Error in get_live_symbol_df for {df.get('SYMBOL', 'Unknown')}: {e}")
         pass
@@ -138,12 +109,14 @@ def get_live_stock():
     print(f"DEBUG: /live request for symbol: {symbol}")
     if ( symbol ):
         try:
-            n = CustomNSELive()
-            stockData = n.stock_quote(symbol)
+            ticker_symbol = f"{symbol}.NS"
+            ticker = yf.Ticker(ticker_symbol)
+            info = ticker.info
+            
             return jsonify({
                 'symbol' : symbol,
-                'industry' : stockData.get('info').get('industry'),
-                'currentPrice' : stockData['priceInfo']['lastPrice']
+                'industry' : info.get('industry', 'N/A'),
+                'currentPrice' : info.get('currentPrice', info.get('regularMarketPrice', 0))
             })
         except Exception as e:
             print(f"Error fetching live stock for {symbol}: {e}")
@@ -173,7 +146,7 @@ def get_dma():
         if df.empty:
             return jsonify({})
             
-        df = df._append( get_live_symbol_df(df.iloc[0]))
+        df = df._append( get_live_symbol_df(df.iloc[0], stock))
         rsi = TA.RSI(df)
         response['symbol'] = stock
         response['id'] = stock
@@ -250,7 +223,7 @@ def get_dma_price_diff_bullish():
         return jsonify({})
 
     df = df.iloc[::-1]
-    df = df._append( get_live_symbol_df(df.iloc[0]))
+    df = df._append( get_live_symbol_df(df.iloc[0], stock))
     
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 
