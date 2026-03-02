@@ -65,37 +65,38 @@ PRICE_DIFF_BEARISH_PERCENTAGE = 5
 MCAP_THRESHOLD = 10
 TIME_DELTA = -1
 
-def get_live_symbol_df( df, symbol ):
+def get_live_symbol_df(last_row, symbol):
     try:
-        # Using yfinance for live data
         ticker_symbol = f"{symbol}.NS"
         ticker = yf.Ticker(ticker_symbol)
-        
-        # Use fast_info for price data as it's faster
+
         fast_info = ticker.fast_info
         last_price = fast_info.last_price
-        
-        # fallback if last_price is missing, though unlikely
-        if last_price is None: 
-             # Try info as backup
-             last_price = ticker.info.get('currentPrice', 0)
 
-        # For OPEN, we might need info or fast_info
+        if last_price is None:
+            last_price = ticker.info.get('currentPrice', 0)
+
         open_price = fast_info.open
         if open_price is None:
             open_price = ticker.info.get('open', 0)
 
-        df['DATE'] = df['DATE']+ timedelta(days=1)
-        df['OPEN'] = open_price
-        df['PREV. CLOSE'] = df['CLOSE']
-        df['LTP'] = last_price
-        df['CLOSE'] = last_price
-        df['VWAP'] = last_price # Approx as yf doesn't provide vwap easily
-        
+        # Convert Series to dict
+        row_dict = last_row.to_dict()
+
+        # Modify values
+        row_dict['DATE'] = row_dict['DATE'] + timedelta(days=1)
+        row_dict['OPEN'] = open_price
+        row_dict['PREV. CLOSE'] = row_dict['CLOSE']
+        row_dict['LTP'] = last_price
+        row_dict['CLOSE'] = last_price
+        row_dict['VWAP'] = last_price
+
+        # Return proper DataFrame
+        return pd.DataFrame([row_dict])
+
     except Exception as e:
-        print(f"Error in get_live_symbol_df for {df.get('SYMBOL', 'Unknown')}: {e}")
-        pass
-    return df
+        print(f"Error in get_live_symbol_df: {e}")
+        return pd.DataFrame()
 
 @app.route('/healthcheck')
 def get_healt_check():
@@ -145,8 +146,8 @@ def get_dma():
         # Double check if reversal made it empty (unlikely but safe)
         if df.empty:
             return jsonify({})
-            
-        df = df._append( get_live_symbol_df(df.iloc[0], stock))
+        live_row = get_live_symbol_df(df.iloc[0], stock)   
+        df = pd.concat([df, live_row], ignore_index=True)
         rsi = TA.RSI(df)
         response['symbol'] = stock
         response['id'] = stock
@@ -223,7 +224,8 @@ def get_dma_price_diff_bullish():
         return jsonify({})
 
     df = df.iloc[::-1]
-    df = df._append( get_live_symbol_df(df.iloc[0], stock))
+    live_row = get_live_symbol_df(df.iloc[0],stock)
+    df = pd.concat([df,live_row], ignore_index=True)
     
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 

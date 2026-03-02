@@ -1,0 +1,9 @@
+venv/
+node_modules/
+__pycache__/
+*.pyc
+bin/
+lib/
+lib64
+pyvenv.cfg
+To
