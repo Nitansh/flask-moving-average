@@ -58,7 +58,7 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         return pd.DataFrame()
 
 app = Flask(__name__)
-pd.options.mode.copy_on_write = True
+# pd.options.mode.copy_on_write = True  # Removed: always enabled in pandas >= 3.0
 
 PRICE_DIFF_PERCENTAGE = 1
 PRICE_DIFF_BEARISH_PERCENTAGE = 5
