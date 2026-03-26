@@ -2,21 +2,22 @@
 
 echo "Starting Flask Backend Servers..."
 
-# Activate the virtual environment
-if [ -f "venv/bin/activate" ]; then
-    source venv/bin/activate
-    echo "Virtual environment activated."
-elif [ -f "env/bin/activate" ]; then
-    source env/bin/activate
-    echo "Virtual environment activated."
+# Determine python executable
+PYTHON_CMD="python3"
+if [ -f "venv/bin/python3" ]; then
+    PYTHON_CMD="venv/bin/python3"
+    echo "Using virtual environment (venv)."
+elif [ -f "env/bin/python3" ]; then
+    PYTHON_CMD="env/bin/python3"
+    echo "Using virtual environment (env)."
 else
-    echo "Virtual environment not found, proceeding without it."
+    echo "Virtual environment not found, using global python3."
 fi
 
 # Run python instances in background
 for port in 5000 5001 5002 5003 5004 5005 5006; do
     echo "Starting Flask on port $port..."
-    python3 app.py $port &
+    $PYTHON_CMD app.py $port &
 done
 
 echo ""
