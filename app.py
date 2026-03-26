@@ -58,44 +58,45 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         return pd.DataFrame()
 
 app = Flask(__name__)
-pd.options.mode.copy_on_write = True
+# pd.options.mode.copy_on_write = True  # Removed: always enabled in pandas >= 3.0
 
-PRICE_DIFF_PERCENTAGE = 1
+PRICE_DIFF_PERCENTAGE = 3
 PRICE_DIFF_BEARISH_PERCENTAGE = 5
 MCAP_THRESHOLD = 10
 TIME_DELTA = -1
 
-def get_live_symbol_df( df, symbol ):
+def get_live_symbol_df(last_row, symbol):
     try:
-        # Using yfinance for live data
         ticker_symbol = f"{symbol}.NS"
         ticker = yf.Ticker(ticker_symbol)
-        
-        # Use fast_info for price data as it's faster
+
         fast_info = ticker.fast_info
         last_price = fast_info.last_price
-        
-        # fallback if last_price is missing, though unlikely
-        if last_price is None: 
-             # Try info as backup
-             last_price = ticker.info.get('currentPrice', 0)
 
-        # For OPEN, we might need info or fast_info
+        if last_price is None:
+            last_price = ticker.info.get('currentPrice', 0)
+
         open_price = fast_info.open
         if open_price is None:
             open_price = ticker.info.get('open', 0)
 
-        df['DATE'] = df['DATE']+ timedelta(days=1)
-        df['OPEN'] = open_price
-        df['PREV. CLOSE'] = df['CLOSE']
-        df['LTP'] = last_price
-        df['CLOSE'] = last_price
-        df['VWAP'] = last_price # Approx as yf doesn't provide vwap easily
-        
+        # Convert Series to dict
+        row_dict = last_row.to_dict()
+
+        # Modify values
+        row_dict['DATE'] = row_dict['DATE'] + timedelta(days=1)
+        row_dict['OPEN'] = open_price
+        row_dict['PREV. CLOSE'] = row_dict['CLOSE']
+        row_dict['LTP'] = last_price
+        row_dict['CLOSE'] = last_price
+        row_dict['VWAP'] = last_price
+
+        # Return proper DataFrame
+        return pd.DataFrame([row_dict])
+
     except Exception as e:
-        print(f"Error in get_live_symbol_df for {df.get('SYMBOL', 'Unknown')}: {e}")
-        pass
-    return df
+        print(f"Error in get_live_symbol_df: {e}")
+        return pd.DataFrame()
 
 @app.route('/healthcheck')
 def get_healt_check():
@@ -145,8 +146,8 @@ def get_dma():
         # Double check if reversal made it empty (unlikely but safe)
         if df.empty:
             return jsonify({})
-            
-        df = df._append( get_live_symbol_df(df.iloc[0], stock))
+        live_row = get_live_symbol_df(df.iloc[0], stock)   
+        df = pd.concat([df, live_row], ignore_index=True)
         rsi = TA.RSI(df)
         response['symbol'] = stock
         response['id'] = stock
@@ -223,7 +224,8 @@ def get_dma_price_diff_bullish():
         return jsonify({})
 
     df = df.iloc[::-1]
-    df = df._append( get_live_symbol_df(df.iloc[0], stock))
+    live_row = get_live_symbol_df(df.iloc[0],stock)
+    df = pd.concat([df,live_row], ignore_index=True)
     
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 
@@ -266,6 +268,29 @@ def get_dma_price_diff_bullish():
     if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['price'] - response['DMA_20']) > (response['price'] * price_diff_bearish_val) and abs(response['DMA_20'] - response['DMA_50']) > (response['DMA_20'] * price_diff_bearish_val):
         response['isBearish'] = 'true'
         print(f"MATCH BEARISH: {stock}")
+
+    # --- Golden Cross Approach Detection ---
+    # Detect stocks where DMA20 is converging toward DMA50 from below
+    # (golden cross hasn't happened yet but is approaching)
+    if dma50 > 0 and dma20 > 0 and price > 0:
+        gap_20_50_pct = ((dma50 - dma20) / dma50) * 100  # positive = DMA20 below DMA50
+        price_above_dma20_pct = ((price - dma20) / dma20) * 100
+
+        response['goldenCrossGap'] = round(gap_20_50_pct, 3)
+
+        # Golden cross approaching: DMA20 below DMA50, gap < 3%, price pushing above DMA20, RSI has room
+        if (cond1  # mcap > threshold
+            and dma20 < dma50  # hasn't crossed yet
+            and gap_20_50_pct < 3  # close to crossing
+            and price > dma20  # price momentum building
+            and response['rsi'] > 35 and response['rsi'] < 65):  # not overbought, room to run
+            response['isGoldenCrossApproaching'] = 'true'
+            response['goldenCrossData'] = {
+                'gap_pct': round(gap_20_50_pct, 3),
+                'price_above_dma20_pct': round(price_above_dma20_pct, 2),
+                'rsi': round(response['rsi'], 2)
+            }
+            print(f"MATCH GOLDEN CROSS APPROACHING: {stock} | Gap: {gap_20_50_pct:.3f}% | PriceAboveDMA20: {price_above_dma20_pct:.2f}%")
 
     return jsonify( response )
     
