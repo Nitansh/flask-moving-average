@@ -11,9 +11,16 @@ const BALANCER_PORT = 4000;
 let currentPortIndex = 0;
 
 const server = http.createServer((req, res) => {
-    // Select the next Flask port in the round-robin cycle
-    const targetPort = FLASK_PORTS[currentPortIndex];
-    currentPortIndex = (currentPortIndex + 1) % FLASK_PORTS.length;
+    let targetPort;
+
+    // Route system management API calls to the local Python Service Manager
+    if (req.url.startsWith('/api/system/')) {
+        targetPort = 8080;
+    } else {
+        // Select the next Flask port in the round-robin cycle
+        targetPort = FLASK_PORTS[currentPortIndex];
+        currentPortIndex = (currentPortIndex + 1) % FLASK_PORTS.length;
+    }
 
     const options = {
         hostname: HOST,

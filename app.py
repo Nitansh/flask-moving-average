@@ -100,9 +100,7 @@ def get_live_symbol_df(last_row, symbol):
 
 @app.route('/healthcheck')
 def get_healt_check():
-    print("in Health Check")
-    df = custom_stock_df(symbol='RELIANCE', from_date=date(2022,7,12), to_date=date(2023,7,12), series="EQ")
-    return str(df.iloc[-1]['CLOSE'])
+    return "ok", 200
 
 @app.route('/live')
 def get_live_stock():
