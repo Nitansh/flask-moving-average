@@ -127,6 +127,21 @@ def check_port(port, path="/healthcheck", timeout=2):
     except:
         return False
 
+def kill_port(port):
+    if sys.platform == 'win32':
+        try:
+            cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr :{port} ^| findstr LISTENING\') do taskkill /f /pid %a'
+            subprocess.run(cmd, shell=True, capture_output=True)
+        except:
+            pass
+    else:
+        try:
+            # -k sends KILL signal, -n identifies by numeric port
+            subprocess.run(f"fuser -k {port}/tcp", shell=True, capture_output=True)
+        except:
+            pass
+    time.sleep(1)
+
 def kill_by_pattern(pattern):
     if sys.platform == 'win32':
         # Generic windows taskkill (less granular than linux)
@@ -148,14 +163,17 @@ def kill_by_pattern(pattern):
 
 def start_flask():
     for port in FLASK_PORTS:
-        if sys.platform == 'win32':
-            subprocess.Popen(f"cd /d {FLASK_DIR} && start /B python app.py {port}", shell=True)
-        else:
-            python_cmd = "venv/bin/python3" if os.path.exists(os.path.join(FLASK_DIR, "venv")) else "python3"
-            subprocess.Popen(
-                f"cd {FLASK_DIR} && nohup {python_cmd} app.py {port} > /tmp/flask_{port}.log 2>&1 &",
-                shell=True, executable="/bin/bash"
-            )
+        start_flask_port(port)
+
+def start_flask_port(port):
+    if sys.platform == 'win32':
+        subprocess.Popen(f"cd /d {FLASK_DIR} && start /B python app.py {port}", shell=True)
+    else:
+        python_cmd = "venv/bin/python3" if os.path.exists(os.path.join(FLASK_DIR, "venv")) else "python3"
+        subprocess.Popen(
+            f"cd {FLASK_DIR} && nohup {python_cmd} app.py {port} > /tmp/flask_{port}.log 2>&1 &",
+            shell=True, executable="/bin/bash"
+        )
 
 def start_balancer():
     if sys.platform == 'win32':
@@ -206,11 +224,21 @@ def status():
 def healthcheck():
     return jsonify({"status": "healthy"}), 200
 
-@app.route('/api/system/restart/<service>', methods=['POST'])
+@app.route('/api/system/restart/<path:service>', methods=['POST'])
 def restart_service(service):
     service = service.lower()
     
-    if service == "flask":
+    if service.startswith("flask/"):
+        try:
+            port = int(service.split("/")[1])
+            if port in FLASK_PORTS:
+                kill_port(port)
+                start_flask_port(port)
+            else:
+                return jsonify({"error": "Invalid port"}), 400
+        except:
+            return jsonify({"error": "Invalid service path"}), 400
+    elif service == "flask":
         kill_by_pattern("python app.py")
         start_flask()
     elif service == "balancer":
@@ -225,7 +253,7 @@ def restart_service(service):
         return jsonify({"error": f"Unknown service: {service}"}), 400
     
     # Give them a few seconds to boot before checking
-    time.sleep(3)
+    time.sleep(2)
     
     return status()
 
