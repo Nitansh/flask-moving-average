@@ -44,26 +44,42 @@ def save_config(data):
 
 # Background Thread for Cloudflare -> Render Sync
 def update_render_api(tunnel_url, render_api_key, render_service_id):
-    url = f"https://api.render.com/v1/services/{render_service_id}/env-vars"
+    # Safe update endpoint for a single variable
+    url = f"https://api.render.com/v1/services/{render_service_id}/env-vars/FLASK_API_URL"
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "Authorization": f"Bearer {render_api_key}"
     }
-    payload = json.dumps([
-        {
-            "key": "FLASK_API_URL",
-            "value": tunnel_url
-        }
-    ]).encode('utf-8')
+    # Render expects a simple { "value": "..." } for single variable PUT
+    payload = json.dumps({"value": tunnel_url}).encode('utf-8')
 
     try:
         req = urllib.request.Request(url, data=payload, headers=headers, method='PUT')
         with urllib.request.urlopen(req) as response:
-            print(f"[Render Sync] Successfully updated Render FLASK_API_URL to {tunnel_url}")
+            print(f"[Render Sync] Successfully updated FLASK_API_URL to: {tunnel_url}")
             return True
     except Exception as e:
-        print(f"[Render Sync Error] {e}")
+        print(f"[Render Sync Error] Variable update failed: {e}")
+        return False
+
+def trigger_render_deploy(render_api_key, render_service_id):
+    url = f"https://api.render.com/v1/services/{render_service_id}/deploys"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {render_api_key}"
+    }
+    # Optional clearCache param
+    payload = json.dumps({"clearCache": "do_not_clear"}).encode('utf-8')
+
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            print(f"[Render Deploy] Triggered fresh deployment successfully!")
+            return True
+    except Exception as e:
+        print(f"[Render Deploy Error] Failed to trigger deploy: {e}")
         return False
 
 def cloudflare_sync_thread():
@@ -82,6 +98,9 @@ def cloudflare_sync_thread():
                                 print(f"[Cloudflare Observer] New tunnel detected: {latest_url}. Syncing to Render...")
                                 success = update_render_api(latest_url, cfg['renderApiKey'], cfg['renderServiceId'])
                                 if success:
+                                    # Trigger the deploy 2 seconds later to be safe
+                                    time.sleep(2)
+                                    trigger_render_deploy(cfg['renderApiKey'], cfg['renderServiceId'])
                                     last_known_url = latest_url
                                     # Save current synced url into config
                                     save_config({"currentTunnelUrl": latest_url})
