@@ -152,7 +152,7 @@ def start_balancer():
 @app.route('/api/system/config', methods=['GET', 'POST'])
 def manage_config():
     if request.method == 'POST':
-        data = request.json
+        data = request.get_json(silent=True) or {}
         save_config({
             "renderApiKey": data.get("renderApiKey", ""),
             "renderServiceId": data.get("renderServiceId", "")
