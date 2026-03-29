@@ -56,7 +56,7 @@ const server = http.createServer((req, res) => {
     req.pipe(proxyReq, { end: true });
 });
 
-server.listen(BALANCER_PORT, '0.0.0.0', () => {
+server.listen(BALANCER_PORT, '::', () => {
     console.log(`===============================================`);
     console.log(`Local Python Load Balancer Running!`);
     console.log(`Routing inbound traffic aggressively to:`);

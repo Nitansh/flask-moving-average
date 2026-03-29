@@ -294,4 +294,4 @@ def get_dma_price_diff_bullish():
     
 if __name__ == '__main__':
     port = sys.argv[1]
-    serve(app, host='0.0.0.0', port=port)
+    serve(app, host='::', port=port)
