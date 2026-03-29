@@ -11,6 +11,17 @@ const BALANCER_PORT = 4000;
 let currentPortIndex = 0;
 
 const server = http.createServer((req, res) => {
+    // Basic CORS for direct browser access via IP (Bootstrap/Override mode)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
     let targetPort;
 
     // Route system management API calls to the local Python Service Manager
