@@ -11,7 +11,11 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 # Enable CORS so the Vercel app can talk directly to this local IP port
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+@app.route('/api/system/ping')
+def ping():
+    return jsonify({"status": "pong", "message": "Pi Service Manager is reachable!"})
 
 # Determine the absolute path of the workspace dynamically
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
