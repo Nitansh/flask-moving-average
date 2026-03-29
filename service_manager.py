@@ -261,7 +261,8 @@ def restart_service(service):
 if __name__ == '__main__':
     print(f"Service Manager running on port 8080. Workspace: {WORKSPACE_DIR}")
     try:
-        from waitress import serve
-        serve(app, host='::', port=8080)
+        # host='::' with threads=4 for robust dual-stack performance on Pi
+        print(f"Waitress starting on [::]:8080 (IPv4 + IPv6)...")
+        serve(app, host='::', port=8080, threads=4)
     except ImportError:
         app.run(host='::', port=8080)

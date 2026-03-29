@@ -58,7 +58,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(BALANCER_PORT, '::', () => {
     console.log(`===============================================`);
-    console.log(`Local Python Load Balancer Running!`);
+    console.log(`Local Python Load Balancer Running (Dual-Stack IPv4/IPv6)!`);
     console.log(`Routing inbound traffic aggressively to:`);
     console.log(`Ports 5000 -> 5006`);
     console.log(`-----------------------------------------------`);

@@ -294,4 +294,5 @@ def get_dma_price_diff_bullish():
     
 if __name__ == '__main__':
     port = sys.argv[1]
-    serve(app, host='::', port=port)
+    # host='::' for dual-stack + threads=4 for concurrent stock fetches
+    serve(app, host='::', port=port, threads=4)
