@@ -206,13 +206,23 @@ def get_history():
             series="EQ"
         )
         
+        # Calculate DEMA indicators for the history
+        # We need enough data, ideally we download more than 'days' to have accurate DEMAs at the start
+        df['dema20'] = TA.DEMA(df, 20)
+        df['dema50'] = TA.DEMA(df, 50)
+        df['dema100'] = TA.DEMA(df, 100)
+        df['dema200'] = TA.DEMA(df, 200)
+        
         # Format for frontend chart
-        # Recharts expects array of objects: [{date: '...', price: 100}, ...]
         history_data = []
         for index, row in df.iterrows():
             history_data.append({
                 'date': row['DATE'].strftime('%Y-%m-%d'),
                 'price': row['CLOSE'],
+                'dema20': row['dema20'] if not pd.isna(row['dema20']) else None,
+                'dema50': row['dema50'] if not pd.isna(row['dema50']) else None,
+                'dema100': row['dema100'] if not pd.isna(row['dema100']) else None,
+                'dema200': row['dema200'] if not pd.isna(row['dema200']) else None,
                 'open': row['OPEN'],
                 'high': row['HIGH'],
                 'low': row['LOW'],
