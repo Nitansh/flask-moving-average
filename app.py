@@ -10,7 +10,7 @@ import requests
 
 import random
 from mcap import MCAP, COMPANY_NAME
-from publish_service import VeoVideoGenerator, InstagramPublisher, TelegramPublisher, load_config
+from publish_service import VeoVideoGenerator, TelegramPublisher, load_config
 import asyncio
 import threading
 from flask_cors import CORS
