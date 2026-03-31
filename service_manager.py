@@ -8,6 +8,10 @@ import subprocess
 import urllib.request
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+try:
+    from waitress import serve
+except ImportError:
+    serve = None
 
 app = Flask(__name__)
 # Enable CORS so the Vercel app can talk directly to this local IP port
