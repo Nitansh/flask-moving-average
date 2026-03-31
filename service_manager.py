@@ -226,7 +226,34 @@ def status():
 
 @app.route('/api/system/healthcheck')
 def healthcheck():
-    return jsonify({"status": "healthy"}), 200
+    # Use any available flask port to verify data fetch pipeline
+    for port in FLASK_PORTS:
+        if check_port(port):
+            return jsonify({"status": "healthy", "source": f"flask_{port}"}), 200
+    return jsonify({"status": "degraded", "message": "All flask workers failed deep health fetch"}), 503
+
+@app.route('/api/system/kill/<path:service>', methods=['POST'])
+def kill_service(service):
+    service = service.lower()
+    print(f"[System] Killing service: {service}")
+    
+    if service.startswith("flask/"):
+        try:
+            port = int(service.split("/")[1])
+            kill_port(port)
+        except:
+            return jsonify({"error": "Invalid port"}), 400
+    elif service == "flask":
+        kill_by_pattern("python app.py")
+    elif service == "balancer":
+        kill_by_pattern("node local_balancer.js")
+    elif service == "all":
+        kill_by_pattern("python app.py")
+        kill_by_pattern("node local_balancer.js")
+    else:
+        return jsonify({"error": f"Unknown service: {service}"}), 400
+        
+    return status()
 
 @app.route('/api/system/restart/<path:service>', methods=['POST'])
 def restart_service(service):
