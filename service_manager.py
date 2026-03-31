@@ -28,6 +28,7 @@ NODE_DIR = os.path.join(WORKSPACE_DIR, 'movingAverage')
 CLIENT_DIR = os.path.join(WORKSPACE_DIR, 'movingAverage', 'client')
 
 FLASK_PORTS = [5000, 5001, 5002, 5003, 5004, 5005, 5006]
+ALLOWED_PORTS = [4000, 8080] + FLASK_PORTS
 CONFIG_FILE = os.path.join(WORKSPACE_DIR, 'service_config.json')
 
 # We'll expect cloudflared to dump its logs here
@@ -151,6 +152,10 @@ def get_pid_for_port(port):
     return None
 
 def kill_port(port):
+    if port not in ALLOWED_PORTS:
+        print(f"[Security Warning] Blocked attempt to kill unauthorized port: {port}")
+        return
+        
     if sys.platform == 'win32':
         try:
             cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr :{port} ^| findstr LISTENING\') do taskkill /f /pid %a'
@@ -162,25 +167,6 @@ def kill_port(port):
             # -k sends KILL signal, -n identifies by numeric port
             subprocess.run(f"fuser -k {port}/tcp", shell=True, capture_output=True)
         except:
-            pass
-    time.sleep(1)
-
-def kill_by_pattern(pattern):
-    if sys.platform == 'win32':
-        # Generic windows taskkill (less granular than linux)
-        if "python" in pattern:
-            subprocess.run("taskkill /F /IM python.exe", shell=True, capture_output=True)
-        elif "node" in pattern:
-            subprocess.run("taskkill /F /IM node.exe", shell=True, capture_output=True)
-    else:
-        try:
-            cmd = f"ps aux | grep '{pattern}' | grep -v grep | grep -v service_manager.py | awk '{{print $2}}'"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            pids = result.stdout.strip().split('\n')
-            for pid in pids:
-                if pid:
-                    os.kill(int(pid), 9)
-        except Exception:
             pass
     time.sleep(1)
 
@@ -262,23 +248,24 @@ def healthcheck():
 @app.route('/api/system/kill/<path:service>', methods=['POST'])
 def kill_service(service):
     service = service.lower()
-    print(f"[System] Killing service: {service}")
     
     if service.startswith("flask/"):
         try:
             port = int(service.split("/")[1])
             kill_port(port)
         except:
-            return jsonify({"error": "Invalid port"}), 400
+            return jsonify({"error": "Invalid port format"}), 400
     elif service == "flask":
-        kill_by_pattern("python app.py")
+        for port in FLASK_PORTS:
+            kill_port(port)
     elif service == "balancer":
-        kill_by_pattern("node local_balancer.js")
+        kill_port(4000)
     elif service == "all":
-        kill_by_pattern("python app.py")
-        kill_by_pattern("node local_balancer.js")
+        for port in ALLOWED_PORTS:
+            if port != 8080: # Don't kill the manager itself via 'all'
+                kill_port(port)
     else:
-        return jsonify({"error": f"Unknown service: {service}"}), 400
+        return jsonify({"error": f"Unknown service or unauthorized: {service}"}), 400
         
     return status()
 
@@ -289,22 +276,21 @@ def restart_service(service):
     if service.startswith("flask/"):
         try:
             port = int(service.split("/")[1])
-            if port in FLASK_PORTS:
-                kill_port(port)
-                start_flask_port(port)
-            else:
-                return jsonify({"error": "Invalid port"}), 400
+            kill_port(port)
+            start_flask_port(port)
         except:
-            return jsonify({"error": "Invalid service path"}), 400
+            return jsonify({"error": "Invalid port"}), 400
     elif service == "flask":
-        kill_by_pattern("python app.py")
+        for port in FLASK_PORTS:
+            kill_port(port)
         start_flask()
     elif service == "balancer":
-        kill_by_pattern("node local_balancer.js")
+        kill_port(4000)
         start_balancer()
     elif service == "all":
-        kill_by_pattern("python app.py")
-        kill_by_pattern("node local_balancer.js")
+        for port in FLASK_PORTS:
+            kill_port(port)
+        kill_port(4000)
         start_flask()
         start_balancer()
     else:
