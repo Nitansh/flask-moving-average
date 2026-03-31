@@ -10,7 +10,7 @@ from google.auth.transport import requests as google_requests
 # Configuration
 DB_PATH = os.path.join(os.path.dirname(__file__), 'auth.db')
 JWT_SECRET = "super-secret-key-replace-in-prod" # Ideally from env
-GOOGLE_CLIENT_ID = "445869361718-hn6mq72892gorv98sq2n8msls91016ud.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', 'your_google_client_id_here')
 ADMIN_EMAIL = "nitansh.bareja@gmail.com"
 
 def init_db():
