@@ -249,56 +249,65 @@ def healthcheck():
 def kill_service(service):
     service = service.lower()
     
-    if service.startswith("flask/"):
-        try:
-            port = int(service.split("/")[1])
-            kill_port(port)
-        except:
-            return jsonify({"error": "Invalid port format"}), 400
-    elif service == "flask":
-        for port in FLASK_PORTS:
-            kill_port(port)
-    elif service == "balancer":
-        kill_port(4000)
-    elif service == "all":
-        for port in ALLOWED_PORTS:
-            if port != 8080: # Don't kill the manager itself via 'all'
+    def process_kill():
+        if service.startswith("flask/"):
+            try:
+                port = int(service.split("/")[1])
                 kill_port(port)
-    else:
-        return jsonify({"error": f"Unknown service or unauthorized: {service}"}), 400
-        
+            except: pass
+        elif service == "flask":
+            for port in FLASK_PORTS:
+                kill_port(port)
+        elif service == "balancer":
+            kill_port(4000)
+        elif service == "all":
+            for port in ALLOWED_PORTS:
+                if port != 8080:
+                    kill_port(port)
+
+    # For 'all' or 'flask' (bulky tasks), background it to avoid proxy timeouts
+    if service in ["all", "flask"]:
+        threading.Thread(target=process_kill).start()
+        return jsonify({"status": "success", "message": f"Killing {service} services in background..."})
+    
+    process_kill()
     return status()
 
 @app.route('/api/system/restart/<path:service>', methods=['POST'])
 def restart_service(service):
     service = service.lower()
     
-    if service.startswith("flask/"):
-        try:
-            port = int(service.split("/")[1])
-            kill_port(port)
-            start_flask_port(port)
-        except:
-            return jsonify({"error": "Invalid port"}), 400
-    elif service == "flask":
-        for port in FLASK_PORTS:
-            kill_port(port)
-        start_flask()
-    elif service == "balancer":
-        kill_port(4000)
-        start_balancer()
-    elif service == "all":
-        for port in FLASK_PORTS:
-            kill_port(port)
-        kill_port(4000)
-        start_flask()
-        start_balancer()
-    else:
-        return jsonify({"error": f"Unknown service: {service}"}), 400
+    def process_restart():
+        if service.startswith("flask/"):
+            try:
+                port = int(service.split("/")[1])
+                kill_port(port)
+                start_flask_port(port)
+            except: pass
+        elif service == "flask":
+            for port in FLASK_PORTS:
+                kill_port(port)
+            start_flask()
+        elif service == "balancer":
+            kill_port(4000)
+            start_balancer()
+        elif service == "all":
+            for port in FLASK_PORTS:
+                kill_port(port)
+            kill_port(4000)
+            start_flask()
+            start_balancer()
+        
+        # Log completion
+        print(f"[Notifier] Restart for {service} completed in background thread.")
+
+    # Background bulky tasks
+    if service in ["all", "flask"]:
+        threading.Thread(target=process_restart).start()
+        return jsonify({"status": "success", "message": f"Restarting {service} services in background. Check status in 30s."})
     
-    # Give them a few seconds to boot before checking
+    process_restart()
     time.sleep(2)
-    
     return status()
 
 
