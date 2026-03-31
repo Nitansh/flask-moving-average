@@ -10,6 +10,9 @@ import requests
 
 import random
 from mcap import MCAP, COMPANY_NAME
+from publish_service import VeoVideoGenerator, InstagramPublisher, TelegramPublisher, load_config
+import asyncio
+import threading
 
 import os
 import certifi
@@ -291,7 +294,60 @@ def get_dma_price_diff_bullish():
             print(f"MATCH GOLDEN CROSS APPROACHING: {stock} | Gap: {gap_20_50_pct:.3f}% | PriceAboveDMA20: {price_above_dma20_pct:.2f}%")
 
     return jsonify( response )
+
+@app.route('/api/video/download/<filename>')
+def download_video(filename):
+    video_dir = os.path.join(os.path.dirname(__file__), 'temp_videos')
+    return send_from_directory(video_dir, filename)
+
+@app.route('/api/stocks/publish-video', methods=['POST'])
+def publish_stock_video():
+    data = request.get_json()
+    symbol = data.get('symbol')
+    platforms = data.get('platforms', ['telegram']) # default to telegram
+    prompt = data.get('prompt')
     
+    if not symbol or not prompt:
+        return jsonify({"error": "Symbol and Prompt are required"}), 400
+
+    # Start the async publishing flow in a background thread
+    def run_publish_flow():
+        config = load_config()
+        
+        # 1. Generate Video via VEO
+        generator = VeoVideoGenerator()
+        video_filename = generator.generate(prompt, symbol)
+        
+        if not video_filename:
+            print(f"[Publish Flow] Failed to generate video for {symbol}")
+            return
+
+        video_path = os.path.join(os.path.dirname(__file__), 'temp_videos', video_filename)
+        public_url = f"{config.get('currentTunnelUrl', 'http://localhost:5000')}/api/video/download/{video_filename}"
+        caption = f"📈 {symbol} Analysis\n\n{prompt.split('.')[-1].strip()}"
+
+        # 2. Publish to selected platforms
+        if not platforms or 'none' in platforms:
+            print(f"[Publish Flow] Video generation complete for {symbol}. No platforms selected.")
+            return
+
+        if 'instagram' in platforms:
+            ig_conf = config.get('instagram', {})
+            if ig_conf.get('access_token'):
+                ig = InstagramPublisher(ig_conf['access_token'], ig_conf['user_id'])
+                ig.publish(public_url, caption)
+                
+        if 'telegram' in platforms:
+            tg_conf = config.get('telegram', {})
+            if tg_conf.get('bot_token'):
+                tg = TelegramPublisher(tg_conf['bot_token'], tg_conf['chat_id'])
+                asyncio.run(tg.publish(video_path, caption))
+                
+        # TODO: YouTube Shorts (requires OAuth)
+
+    threading.Thread(target=run_publish_flow).start()
+    return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202
+
 if __name__ == '__main__':
     port = sys.argv[1]
     # host='::' for dual-stack + threads=4 for concurrent stock fetches

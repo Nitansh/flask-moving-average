@@ -56,3 +56,8 @@ waitress==3.0.2
 websockets==16.0
 Werkzeug==3.1.6
 yfinance==1.2.0
+google-genai
+google-api-python-client
+google-auth-oauthlib
+python-telegram-bot
+requests
