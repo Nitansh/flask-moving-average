@@ -13,6 +13,8 @@ from mcap import MCAP, COMPANY_NAME
 from publish_service import VeoVideoGenerator, InstagramPublisher, TelegramPublisher, load_config
 import asyncio
 import threading
+from flask_cors import CORS
+from auth import verify_google_token, generate_jwt, login_required, admin_required, create_user, get_user, check_trial_status, ADMIN_EMAIL
 
 import os
 import certifi
@@ -61,6 +63,7 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         return pd.DataFrame()
 
 app = Flask(__name__)
+CORS(app) # Enable CORS for frontend
 # pd.options.mode.copy_on_write = True  # Removed: always enabled in pandas >= 3.0
 
 PRICE_DIFF_PERCENTAGE = 3
@@ -101,6 +104,52 @@ def get_live_symbol_df(last_row, symbol):
         print(f"Error in get_live_symbol_df: {e}")
         return pd.DataFrame()
 
+@app.route('/api/auth/google/login', methods=['POST'])
+def google_login():
+    data = request.get_json()
+    token = data.get('token')
+    if not token:
+        return jsonify({"message": "No token provided"}), 400
+    
+    idinfo = verify_google_token(token)
+    if not idinfo:
+        return jsonify({"message": "Invalid Google token"}), 401
+    
+    email = idinfo.get('email')
+    
+    # Check if user exists, if not create
+    user = get_user(email)
+    if not user:
+        role = 'admin' if email == ADMIN_EMAIL else 'user'
+        create_user(email, role)
+        user = get_user(email)
+    
+    # Generate JWT for our app
+    jwt_token = generate_jwt(user)
+    
+    return jsonify({
+        "token": jwt_token,
+        "user": user
+    })
+
+@app.route('/api/auth/verify', methods=['GET'])
+@login_required
+def verify_session():
+    # Decorator attaches user to request
+    email = request.user.get('email')
+    user = get_user(email)
+    
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+        
+    # Check trial status for non-admins
+    trial_active = check_trial_status(email)
+    
+    return jsonify({
+        "user": user,
+        "trial_active": trial_active
+    })
+
 @app.route('/healthcheck')
 def get_healt_check():
     return "ok", 200
@@ -127,7 +176,11 @@ def get_live_stock():
         return jsonify({})
 
 @app.route('/')
+@login_required
 def get_dma():
+    email = request.user.get('email')
+    if not check_trial_status(email):
+        return jsonify({"error": "Trial Expired", "message": "Your 5-day trial has ended. Please contact admin."}), 403
     response = {}
     try:
         stock = request.args.get('symbol')
@@ -301,6 +354,7 @@ def download_video(filename):
     return send_from_directory(video_dir, filename)
 
 @app.route('/api/stocks/publish-video', methods=['POST'])
+@admin_required
 def publish_stock_video():
     data = request.get_json()
     symbol = data.get('symbol')

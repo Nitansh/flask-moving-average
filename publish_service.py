@@ -37,6 +37,7 @@ class VeoVideoGenerator:
         try:
             config = types.GenerateVideosConfig(
                 aspect_ratio="9:16",
+                number_of_videos=1,
             )
             
             operation = self.client.models.generate_videos(
