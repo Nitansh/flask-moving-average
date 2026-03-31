@@ -355,28 +355,10 @@ def publish_stock_video():
             
             caption = f"📈 {symbol} Analysis\n\n{prompt.split('.')[-1].strip()}"
 
-            # 2. Publish to selected platforms
-            if not platforms or 'none' in platforms:
-                print(f"[Publish Flow] Video generation complete for {symbol}. No platforms selected.")
-                return
-
-            if 'instagram' in platforms:
-                print(f"[Publish Flow] Publishing to Instagram...")
-                ig_conf = config.get('instagram', {})
-                if ig_conf.get('access_token'):
-                    ig = InstagramPublisher(ig_conf['access_token'], ig_conf['user_id'])
-                    ig.publish(public_url, caption)
-                else:
-                    print("[Publish Flow] Instagram credentials missing.")
-                    
-            if 'telegram' in platforms:
-                print(f"[Publish Flow] Publishing to Telegram...")
-                tg_conf = config.get('telegram', {})
-                if tg_conf.get('bot_token'):
-                    tg = TelegramPublisher(tg_conf['bot_token'], tg_conf['chat_id'])
-                    asyncio.run(tg.publish(video_path, caption))
-                else:
-                    print("[Publish Flow] Telegram credentials missing.")
+            # 2. Publish to Telegram
+            print(f"[Publish Flow] Broadcasting analysis to Telegram...")
+            tg = TelegramPublisher()
+            tg.publish(public_url, caption)
             
             print(f"[Publish Flow] Flow completed for {symbol}")
         except Exception as e:

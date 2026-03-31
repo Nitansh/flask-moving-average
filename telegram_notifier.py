@@ -5,20 +5,25 @@ import os
 RENDER_URL = "https://movingaverage-sh7s.onrender.com"
 SECRET = "pi-heartbeat-2024"
 
-def send_alert(message):
+def send_alert(message, video_url=None):
     """
-    Sends a notification to Telegram by proxying through the Render Gateway.
+    Sends a notification (text or video) to Telegram by proxying through the Render Gateway.
     This keeps the Telegram Bot Token secure on Render.
     """
     endpoint = f"{RENDER_URL}/api/notify/telegram"
     payload = {
         "message": message,
+        "videoUrl": video_url,
         "secret": SECRET
     }
     
     try:
-        print(f"[Notifier] Sending alert to Render: {message[:50]}...")
-        resp = requests.post(endpoint, json=payload, timeout=10)
+        if video_url:
+            print(f"[Notifier] Sending video alert to Render: {video_url}...")
+        else:
+            print(f"[Notifier] Sending text alert to Render: {message[:50]}...")
+            
+        resp = requests.post(endpoint, json=payload, timeout=15)
         if resp.status_code == 200:
             print("[Notifier] Alert sent successfully via Render.")
             return True
