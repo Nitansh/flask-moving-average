@@ -131,6 +131,25 @@ def check_port(port, path="/healthcheck", timeout=2):
     except:
         return False
 
+def get_pid_for_port(port):
+    try:
+        if sys.platform == 'win32':
+            # Windows netstat -ano findstr :port
+            cmd = f"netstat -ano | findstr LISTENING | findstr :{port}"
+            output = subprocess.check_output(cmd, shell=True).decode()
+            if output:
+                # PID is the last element
+                return int(output.strip().split()[-1])
+        else:
+            # Linux fuser
+            cmd = f"fuser {port}/tcp 2>/dev/null"
+            output = subprocess.check_output(cmd, shell=True).decode()
+            if output:
+                return int(output.strip())
+    except:
+        pass
+    return None
+
 def kill_port(port):
     if sys.platform == 'win32':
         try:
@@ -205,12 +224,20 @@ def manage_config():
 def status():
     services = {}
     for port in FLASK_PORTS:
-        services[f"flask_{port}"] = "up" if check_port(port) else "down"
+        is_up = check_port(port)
+        services[f"flask_{port}"] = {
+            "status": "up" if is_up else "down",
+            "pid": get_pid_for_port(port) if is_up else None
+        }
     
     # Check load balancer on 4000
-    services["balancer_4000"] = "up" if check_port(4000, path="/api/system/healthcheck") else "down"
+    lb_up = check_port(4000, path="/api/system/healthcheck")
+    services["balancer_4000"] = {
+        "status": "up" if lb_up else "down",
+        "pid": get_pid_for_port(4000) if lb_up else None
+    }
 
-    up = sum(1 for v in services.values() if v == "up")
+    up = sum(1 for v in services.values() if v["status"] == "up")
     total = len(services)
     
     cfg = load_config()
