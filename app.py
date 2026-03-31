@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from datetime import date, timedelta, datetime
 from jugaad_data.nse import NSELive
 from jugaad_data.nse.history import NSEHistory, stock_select_headers, stock_final_headers, stock_dtypes
@@ -366,38 +366,54 @@ def publish_stock_video():
 
     # Start the async publishing flow in a background thread
     def run_publish_flow():
-        config = load_config()
-        
-        # 1. Generate Video via VEO
-        generator = VeoVideoGenerator()
-        video_filename = generator.generate(prompt, symbol)
-        
-        if not video_filename:
-            print(f"[Publish Flow] Failed to generate video for {symbol}")
-            return
+        try:
+            print(f"[Publish Flow] Starting flow for {symbol}...")
+            config = load_config()
+            
+            # 1. Generate Video via VEO
+            generator = VeoVideoGenerator()
+            video_filename = generator.generate(prompt, symbol)
+            
+            if not video_filename:
+                print(f"[Publish Flow] Failed to generate video for {symbol}")
+                return
 
-        video_path = os.path.join(os.path.dirname(__file__), 'temp_videos', video_filename)
-        public_url = f"{config.get('currentTunnelUrl', 'http://localhost:5000')}/api/video/download/{video_filename}"
-        caption = f"📈 {symbol} Analysis\n\n{prompt.split('.')[-1].strip()}"
+            video_path = os.path.join(os.path.dirname(__file__), 'temp_videos', video_filename)
+            # Ensure the relative path is correct for the public URL
+            base_url = config.get('currentTunnelUrl', 'http://localhost:5000').rstrip('/')
+            public_url = f"{base_url}/api/video/download/{video_filename}"
+            
+            print(f"[Publish Flow] Video generated: {video_filename}")
+            print(f"[Publish Flow] Public URL: {public_url}")
+            
+            caption = f"📈 {symbol} Analysis\n\n{prompt.split('.')[-1].strip()}"
 
-        # 2. Publish to selected platforms
-        if not platforms or 'none' in platforms:
-            print(f"[Publish Flow] Video generation complete for {symbol}. No platforms selected.")
-            return
+            # 2. Publish to selected platforms
+            if not platforms or 'none' in platforms:
+                print(f"[Publish Flow] Video generation complete for {symbol}. No platforms selected.")
+                return
 
-        if 'instagram' in platforms:
-            ig_conf = config.get('instagram', {})
-            if ig_conf.get('access_token'):
-                ig = InstagramPublisher(ig_conf['access_token'], ig_conf['user_id'])
-                ig.publish(public_url, caption)
-                
-        if 'telegram' in platforms:
-            tg_conf = config.get('telegram', {})
-            if tg_conf.get('bot_token'):
-                tg = TelegramPublisher(tg_conf['bot_token'], tg_conf['chat_id'])
-                asyncio.run(tg.publish(video_path, caption))
-                
-        # TODO: YouTube Shorts (requires OAuth)
+            if 'instagram' in platforms:
+                print(f"[Publish Flow] Publishing to Instagram...")
+                ig_conf = config.get('instagram', {})
+                if ig_conf.get('access_token'):
+                    ig = InstagramPublisher(ig_conf['access_token'], ig_conf['user_id'])
+                    ig.publish(public_url, caption)
+                else:
+                    print("[Publish Flow] Instagram credentials missing.")
+                    
+            if 'telegram' in platforms:
+                print(f"[Publish Flow] Publishing to Telegram...")
+                tg_conf = config.get('telegram', {})
+                if tg_conf.get('bot_token'):
+                    tg = TelegramPublisher(tg_conf['bot_token'], tg_conf['chat_id'])
+                    asyncio.run(tg.publish(video_path, caption))
+                else:
+                    print("[Publish Flow] Telegram credentials missing.")
+            
+            print(f"[Publish Flow] Flow completed for {symbol}")
+        except Exception as e:
+            print(f"[Publish Flow Error] {e}")
 
     threading.Thread(target=run_publish_flow).start()
     return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202

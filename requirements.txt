@@ -59,5 +59,8 @@ yfinance==1.2.0
 google-genai
 google-api-python-client
 google-auth-oauthlib
+google-auth
 python-telegram-bot
 requests
+PyJWT
+flask-cors

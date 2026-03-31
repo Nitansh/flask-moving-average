@@ -20,6 +20,10 @@ def load_config():
 
 class VeoVideoGenerator:
     def __init__(self):
+        # Ensure temp directory exists
+        os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
+        print(f"[VEO] Temp video directory: {TEMP_VIDEO_DIR}")
+        
         config = load_config()
         sa_path = os.path.join(os.path.dirname(__file__), 'service_account.json')
         
@@ -54,17 +58,27 @@ class VeoVideoGenerator:
 
             if operation.result:
                 video_url = operation.result.generated_videos[0].video.uri
+                print(f"[VEO] Video generation successful. URI: {video_url}")
+                
                 filename = f"{symbol}_{int(time.time())}.mp4"
                 filepath = os.path.join(TEMP_VIDEO_DIR, filename)
                 
                 # Download the video
                 print(f"[VEO] Downloading generated video to {filepath}...")
-                resp = requests.get(video_url)
+                resp = requests.get(video_url, timeout=60)
+                resp.raise_for_status()
+                
                 with open(filepath, 'wb') as f:
                     f.write(resp.content)
+                
+                print(f"[VEO] Download complete: {filename} ({os.path.getsize(filepath)} bytes)")
                 return filename
+            else:
+                print(f"[VEO] Operation finished but no result found for {symbol}")
         except Exception as e:
             print(f"[VEO Error] {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
 class InstagramPublisher:
