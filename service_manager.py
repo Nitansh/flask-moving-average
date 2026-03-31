@@ -265,13 +265,9 @@ def kill_service(service):
                 if port != 8080:
                     kill_port(port)
 
-    # For 'all' or 'flask' (bulky tasks), background it to avoid proxy timeouts
-    if service in ["all", "flask"]:
-        threading.Thread(target=process_kill).start()
-        return jsonify({"status": "success", "message": f"Killing {service} services in background..."})
-    
-    process_kill()
-    return status()
+    # Always background to prevent proxy timeouts
+    threading.Thread(target=process_kill).start()
+    return jsonify({"status": "success", "message": f"Kill command for {service} started in background..."})
 
 @app.route('/api/system/restart/<path:service>', methods=['POST'])
 def restart_service(service):
@@ -294,21 +290,15 @@ def restart_service(service):
         elif service == "all":
             for port in FLASK_PORTS:
                 kill_port(port)
-            kill_port(4000)
+                kill_port(4000)
             start_flask()
             start_balancer()
         
-        # Log completion
         print(f"[Notifier] Restart for {service} completed in background thread.")
 
-    # Background bulky tasks
-    if service in ["all", "flask"]:
-        threading.Thread(target=process_restart).start()
-        return jsonify({"status": "success", "message": f"Restarting {service} services in background. Check status in 30s."})
-    
-    process_restart()
-    time.sleep(2)
-    return status()
+    # Always background to prevent proxy timeouts
+    threading.Thread(target=process_restart).start()
+    return jsonify({"status": "success", "message": f"Restart for {service} started in background. Status will update in 20s."})
 
 
 if __name__ == '__main__':
