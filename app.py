@@ -1,7 +1,5 @@
 from flask import Flask, jsonify, request, send_from_directory
 from datetime import date, timedelta, datetime
-from jugaad_data.nse import NSELive
-from jugaad_data.nse.history import NSEHistory, stock_select_headers, stock_final_headers, stock_dtypes
 from finta import TA
 from waitress import serve
 import pandas as pd
