@@ -6,7 +6,7 @@ const http = require('http');
 
 const FLASK_PORTS = [5001, 5002, 5003, 5004, 5005, 5006, 5007];
 const HOST = 'localhost';
-const BALANCER_PORT = 4000;
+const BALANCER_PORT = 4001;
 
 let currentPortIndex = 0;
 
@@ -26,7 +26,7 @@ const server = http.createServer((req, res) => {
 
     // Route system management API calls to the local Python Service Manager
     if (req.url.startsWith('/api/system/')) {
-        targetPort = 8080;
+        targetPort = 8081;
     } else {
         // Select the next Flask port in the round-robin cycle
         targetPort = FLASK_PORTS[currentPortIndex];

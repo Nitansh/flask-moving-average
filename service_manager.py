@@ -28,7 +28,7 @@ NODE_DIR = os.path.join(WORKSPACE_DIR, 'movingAverage')
 CLIENT_DIR = os.path.join(WORKSPACE_DIR, 'movingAverage', 'client')
 
 FLASK_PORTS = [5001, 5002, 5003, 5004, 5005, 5006, 5007]
-ALLOWED_PORTS = [4000, 8080] + FLASK_PORTS
+ALLOWED_PORTS = [4001, 8081] + FLASK_PORTS
 CONFIG_FILE = os.path.join(WORKSPACE_DIR, 'service_config.json')
 
 # We'll expect cloudflared to dump its logs here
@@ -302,10 +302,10 @@ def restart_service(service):
 
 
 if __name__ == '__main__':
-    print(f"Service Manager running on port 8080. Workspace: {WORKSPACE_DIR}")
+    print(f"Service Manager running on port 8081. Workspace: {WORKSPACE_DIR}")
     try:
         # host='::' with threads=4 for robust dual-stack performance on Pi
-        print(f"Waitress starting on 0.0.0.0:8080 (IPv4 Only)...")
-        serve(app, host='0.0.0.0', port=8080, threads=4)
+        print(f"Waitress starting on 0.0.0.0:8081 (IPv4 Only)...")
+        serve(app, host='0.0.0.0', port=8081, threads=4)
     except ImportError:
-        app.run(host='0.0.0.0', port=8080)
+        app.run(host='0.0.0.0', port=8081)
