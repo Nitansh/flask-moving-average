@@ -58,9 +58,9 @@ const server = http.createServer((req, res) => {
 
 server.listen(BALANCER_PORT, '0.0.0.0', () => {
     console.log(`===============================================`);
-    console.log(`Local Python Load Balancer Running (Dual-Stack IPv4/IPv6)!`);
+    console.log(`Local Python Load Balancer Running (IPv4 Only)!`);
     console.log(`Routing inbound traffic aggressively to:`);
-    console.log(`Ports 5000 -> 5006`);
+    console.log(`Ports ${FLASK_PORTS[0]} -> ${FLASK_PORTS[FLASK_PORTS.length - 1]}`);
     console.log(`-----------------------------------------------`);
     console.log(`Cloudflare Tunnel Target URL: http://localhost:${BALANCER_PORT}`);
     console.log(`===============================================`);
