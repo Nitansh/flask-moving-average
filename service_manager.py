@@ -94,7 +94,7 @@ def cloudflare_sync_thread():
             if os.path.exists(CLOUDFLARED_LOG):
                 with open(CLOUDFLARED_LOG, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
-                    matches = re.findall(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', content)
+                    matches = re.findall(r'https://[a-zA-Z0-9.-]+\.trycloudflare\.com', content)
                     if matches:
                         latest_url = matches[-1]
                         if latest_url != last_known_url:
@@ -216,11 +216,11 @@ def status():
             "pid": get_pid_for_port(port) if is_up else None
         }
     
-    # Check load balancer on 4000
-    lb_up = check_port(4000, path="/api/system/healthcheck")
-    services["balancer_4000"] = {
+    # Check load balancer on 4001
+    lb_up = check_port(4001, path="/api/system/healthcheck")
+    services["balancer_4001"] = {
         "status": "up" if lb_up else "down",
-        "pid": get_pid_for_port(4000) if lb_up else None
+        "pid": get_pid_for_port(4001) if lb_up else None
     }
 
     up = sum(1 for v in services.values() if v["status"] == "up")
