@@ -259,7 +259,7 @@ def kill_service(service):
             for port in FLASK_PORTS:
                 kill_port(port)
         elif service == "balancer":
-            kill_port(4000)
+            kill_port(4001)
         elif service == "all":
             for port in ALLOWED_PORTS:
                 if port != 8080:
@@ -285,12 +285,12 @@ def restart_service(service):
                 kill_port(port)
             start_flask()
         elif service == "balancer":
-            kill_port(4000)
+            kill_port(4001)
             start_balancer()
         elif service == "all":
             for port in FLASK_PORTS:
                 kill_port(port)
-                kill_port(4000)
+            kill_port(4001)
             start_flask()
             start_balancer()
         
