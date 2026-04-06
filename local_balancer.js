@@ -4,7 +4,7 @@
 
 const http = require('http');
 
-const FLASK_PORTS = [5000, 5001, 5002, 5003, 5004, 5005, 5006];
+const FLASK_PORTS = [5001, 5002, 5003, 5004, 5005, 5006, 5007];
 const HOST = 'localhost';
 const BALANCER_PORT = 4000;
 
@@ -56,7 +56,7 @@ const server = http.createServer((req, res) => {
     req.pipe(proxyReq, { end: true });
 });
 
-server.listen(BALANCER_PORT, '::', () => {
+server.listen(BALANCER_PORT, '0.0.0.0', () => {
     console.log(`===============================================`);
     console.log(`Local Python Load Balancer Running (Dual-Stack IPv4/IPv6)!`);
     console.log(`Routing inbound traffic aggressively to:`);
