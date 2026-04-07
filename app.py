@@ -161,13 +161,14 @@ def get_dma():
             print(f"Skipping {stock}: No invalid historical data found.")
             return jsonify({})
             
-        df = df.iloc[::-1]
+        # Reversal removed: DF from custom_stock_df is already chronological (Day 1, Day 2, etc.)
         
-        # Double check if reversal made it empty (unlikely but safe)
-        if df.empty:
-            return jsonify({})
-        live_row = get_live_symbol_df(df.iloc[0], stock)   
+        # Take the last row (newest historical row) to build the live row
+        live_row = get_live_symbol_df(df.iloc[-1], stock)
+        
+        # Append live price to the end (CHRONOLOGICAL)
         df = pd.concat([df, live_row], ignore_index=True)
+        
         rsi = TA.RSI(df)
         response['symbol'] = stock
         response['id'] = stock
@@ -253,9 +254,13 @@ def get_dma_price_diff_bullish():
         print(f"Skipping {stock}: No invalid historical data found.")
         return jsonify({})
 
-    df = df.iloc[::-1]
-    live_row = get_live_symbol_df(df.iloc[0],stock)
-    df = pd.concat([df,live_row], ignore_index=True)
+    # Reversal removed: DF from custom_stock_df is already chronological
+    
+    # Take the last row (newest historical row) to build high-precision live row
+    live_row = get_live_symbol_df(df.iloc[-1], stock)
+    
+    # Append live price to the end (CHRONOLOGICAL)
+    df = pd.concat([df, live_row], ignore_index=True)
     
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 
