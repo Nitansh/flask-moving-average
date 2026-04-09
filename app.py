@@ -56,6 +56,8 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         })
         
         df['SYMBOL'] = symbol
+        # Drop rows with missing Close prices to prevent NaN in technical indicators
+        df = df.dropna(subset=['CLOSE'])
         return df
     except Exception as e:
         print(f"Error in custom_stock_df for {symbol}: {e}")
@@ -131,12 +133,23 @@ def get_live_stock():
         try:
             ticker_symbol = f"{symbol}.NS"
             ticker = yf.Ticker(ticker_symbol)
+            
+            # Fetch minimal history for RSI calculation
+            hist = ticker.history(period="1mo")
+            rsi_val = None
+            if not hist.empty and len(hist) > 14:
+                rsi_series = TA.RSI(hist)
+                last_rsi = rsi_series.iloc[-1]
+                rsi_val = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
+
             info = ticker.info
+            current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
             
             return jsonify({
                 'symbol' : symbol,
                 'industry' : info.get('industry', 'N/A'),
-                'currentPrice' : info.get('currentPrice', info.get('regularMarketPrice', 0))
+                'currentPrice' : current_price,
+                'rsi': rsi_val
             })
         except Exception as e:
             print(f"Error fetching live stock for {symbol}: {e}")
@@ -170,17 +183,33 @@ def get_dma():
         df = pd.concat([df, live_row], ignore_index=True)
         
         rsi = TA.RSI(df)
+        last_rsi = rsi.iloc[-1]
+        
         response['symbol'] = stock
         response['id'] = stock
         response['price'] = df.iloc[-1]['CLOSE']
-        response['rsi'] = rsi.iloc[-1]
+        response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
         response['mcap'] = MCAP.get(stock, 0)
         response['name'] = COMPANY_NAME.get(stock, stock)
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
         response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+        
         for item in dma_list:
-            response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
-        if response['rsi'] > 20 and response['rsi'] < 70 and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50'] and response['price'] > response['DMA_100'] and response['price'] > response['DMA_200']:
+            try:
+                dema_series = TA.DEMA(df, int(item.split('_')[1]))
+                last_dema = dema_series.iloc[-1]
+                response[item] = round(float(last_dema), 2) if not pd.isna(last_dema) else None
+            except Exception as e:
+                print(f"Error calculating {item} for {stock}: {e}")
+                response[item] = None
+
+        # Safe bullish check (handle None)
+        has_all_dmas = all(response.get(d) is not None for d in dma_list)
+        if (response['rsi'] is not None and response['rsi'] > 20 and response['rsi'] < 70 
+            and has_all_dmas and response['price'] > response.get('DMA_20', 0) 
+            and response['price'] > response.get('DMA_50', 0) 
+            and response['price'] > response.get('DMA_100', 0) 
+            and response['price'] > response.get('DMA_200', 0)):
             response['isBullish'] = 'true'
     except Exception as e:
         print( "Error occurred in "+stock)
@@ -265,17 +294,25 @@ def get_dma_price_diff_bullish():
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 
     rsi = TA.RSI(df)
+    last_rsi = rsi.iloc[-1]
 
     response['symbol'] = stock
     response['id'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
-    response['rsi'] = rsi.iloc[-1]
+    response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
     response['mcap'] = MCAP.get(stock, 0)
     response['name'] = COMPANY_NAME.get(stock, stock)
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+    
     for item in dma_list:
-        response[item] = TA.DEMA(df, int(item.split('_')[1] ) ).iloc[-1]
+        try:
+            dema_series = TA.DEMA(df, int(item.split('_')[1]))
+            last_dema = dema_series.iloc[-1]
+            response[item] = round(float(last_dema), 2) if not pd.isna(last_dema) else None
+        except Exception as e:
+            print(f"Error calculating {item} for {stock} in price_diff: {e}")
+            response[item] = None
     
     # Debug Logic
     dma20 = response.get('DMA_20', 0)
@@ -315,15 +352,17 @@ def get_dma_price_diff_bullish():
 
         # Golden cross approaching: DMA20 below DMA50, gap < 3%, price pushing above DMA20, RSI has room
         if (cond1  # mcap > threshold
+            and dma20 > 0 and dma50 > 0 # ensure valid DMAs exist
             and dma20 < dma50  # hasn't crossed yet
             and gap_20_50_pct < 3  # close to crossing
             and price > dma20  # price momentum building
+            and response['rsi'] is not None # handle None RSI
             and response['rsi'] > 35 and response['rsi'] < 65):  # not overbought, room to run
             response['isGoldenCrossApproaching'] = 'true'
             response['goldenCrossData'] = {
                 'gap_pct': round(gap_20_50_pct, 3),
                 'price_above_dma20_pct': round(price_above_dma20_pct, 2),
-                'rsi': round(response['rsi'], 2)
+                'rsi': round(float(response['rsi']), 2)
             }
             print(f"MATCH GOLDEN CROSS APPROACHING: {stock} | Gap: {gap_20_50_pct:.3f}% | PriceAboveDMA20: {price_above_dma20_pct:.2f}%")
 
