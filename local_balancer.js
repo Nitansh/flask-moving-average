@@ -17,6 +17,7 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.url === '/health' || req.url === '/ping') {
+        console.log(`[Health Check] Received at ${new Date().toISOString()}`);
         res.writeHead(200);
         res.end('OK');
         return;
