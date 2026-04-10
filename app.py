@@ -128,8 +128,8 @@ def get_health_check():
 @app.route('/live')
 def get_live_stock():
     symbol = request.args.get('symbol')
-    print(f"DEBUG: /live request for symbol: {symbol}")
-    if ( symbol ):
+    print(f"DEBUG: /live request for symbol: '{symbol}'")
+    if symbol:
         try:
             ticker_symbol = f"{symbol}.NS"
             ticker = yf.Ticker(ticker_symbol)
@@ -163,8 +163,15 @@ def get_dma():
     response = {}
     try:
         stock = request.args.get('symbol')
+        if not stock:
+            return jsonify({"error": "Symbol parameter is required"}), 400
+            
+        dma_param = request.args.get('dma')
+        if not dma_param:
+            return jsonify({"error": "DMA parameter (comma-separated) is required"}), 400
+            
         print(f"DEBUG: / (DMA) request for symbol: {stock}")
-        dma_list = request.args.get('dma').split(',')
+        dma_list = dma_param.split(',')
         one_day_before = datetime.now() + timedelta(days=-1)
         year = one_day_before.year
         month = one_day_before.month
