@@ -60,6 +60,5 @@ google-api-python-client
 google-auth-oauthlib
 google-auth
 python-telegram-bot
-requests
 PyJWT
 flask-cors
