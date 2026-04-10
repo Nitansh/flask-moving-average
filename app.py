@@ -191,6 +191,7 @@ def get_dma():
         response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
         response['mcap'] = MCAP.get(stock, 0)
         response['name'] = COMPANY_NAME.get(stock, stock)
+        response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
         response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
         
@@ -302,6 +303,7 @@ def get_dma_price_diff_bullish():
     response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
     response['mcap'] = MCAP.get(stock, 0)
     response['name'] = COMPANY_NAME.get(stock, stock)
+    response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
     
