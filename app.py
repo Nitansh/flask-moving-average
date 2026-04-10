@@ -134,8 +134,8 @@ def get_live_stock():
             ticker_symbol = f"{symbol}.NS"
             ticker = yf.Ticker(ticker_symbol)
             
-            # Fetch minimal history for RSI calculation
-            hist = ticker.history(period="1mo")
+            # Fetch 1 year of history for stable RSI calculation
+            hist = ticker.history(period="1y")
             rsi_val = None
             if not hist.empty and len(hist) > 14:
                 rsi_series = TA.RSI(hist)
