@@ -15,13 +15,40 @@ from flask_cors import CORS
 
 # Load industry mapping from nifty500.csv
 INDUSTRY_MAP = {}
+INDUSTRY_CACHE_FILE = 'industry_cache.json'
 try:
     nifty_df = pd.read_csv('nifty500.csv')
-    # Assuming columns are 'Symbol' and 'Industry'
     for _, row in nifty_df.iterrows():
         INDUSTRY_MAP[row['Symbol']] = row['Industry']
 except Exception as e:
     print(f"Error loading nifty500.csv: {e}")
+
+# Load persistent cache for symbols not in Nifty 500
+industry_cache = {}
+if os.path.exists(INDUSTRY_CACHE_FILE):
+    try:
+        with open(INDUSTRY_CACHE_FILE, 'r') as f:
+            industry_cache = json.load(f)
+    except: pass
+
+def get_industry_with_fallback(symbol):
+    if symbol in INDUSTRY_MAP:
+        return INDUSTRY_MAP[symbol]
+    if symbol in industry_cache:
+        return industry_cache[symbol]
+    
+    # Fallback to yfinance (slow, so we cache it)
+    try:
+        print(f"[Industry Fallback] Fetching for {symbol}...")
+        info = yf.Ticker(f"{symbol}.NS").info
+        ind = info.get('industry', 'Unknown Sector')
+        industry_cache[symbol] = ind
+        # Save cache
+        with open(INDUSTRY_CACHE_FILE, 'w') as f:
+            json.dump(industry_cache, f)
+        return ind
+    except:
+        return 'Unknown Sector'
 
 # Redundant auth logic removed, now handled by Node Gateway on Render
 # from auth import verify_google_token, generate_jwt, login_required, admin_required, create_user, get_user, check_trial_status, ADMIN_EMAIL
@@ -323,7 +350,7 @@ def get_dma_price_diff_bullish():
     mcap_val = MCAP.get(stock, 0)
     response['mcap'] = mcap_val
     response['name'] = COMPANY_NAME.get(stock, stock)
-    response['industry'] = INDUSTRY_MAP.get(stock, 'Unknown')
+    response['industry'] = get_industry_with_fallback(stock)
     response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
     
     # Categorize Market Type based on MCAP (Cr)
@@ -351,7 +378,7 @@ def get_dma_price_diff_bullish():
     dma50 = response.get('DMA_50', 0)
     dma100 = response.get('DMA_100', 0)
     price = response['price']
-
+ 
     # Bullish Condition Debug
     cond1 = response['mcap'] > MCAP_THRESHOLD
     cond2 = price > dma20 and price > dma50 and price > dma100
