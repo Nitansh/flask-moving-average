@@ -7,6 +7,8 @@ import sys
 import requests
 
 import random
+import os
+import json
 from mcap import MCAP, COMPANY_NAME
 from publish_service import VeoVideoGenerator, TelegramPublisher, load_config
 import asyncio
