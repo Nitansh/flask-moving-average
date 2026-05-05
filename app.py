@@ -489,6 +489,27 @@ def publish_stock_video():
     threading.Thread(target=run_publish_flow).start()
     return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202
 
+@app.route('/api/market-intelligence')
+def get_market_intelligence():
+    try:
+        from market_intelligence import generate_market_intelligence
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            # Fallback to local config if available
+            try:
+                config = load_config()
+                api_key = config.get('GOOGLE_API_KEY')
+            except: pass
+            
+        if not api_key:
+            return jsonify({"error": "GOOGLE_API_KEY not configured"}), 500
+            
+        report = generate_market_intelligence(api_key)
+        return jsonify({"report": report})
+    except Exception as e:
+        print(f"Error in /api/market-intelligence: {e}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     port = sys.argv[1]
     # host='::' for dual-stack + threads=4 for concurrent stock fetches
