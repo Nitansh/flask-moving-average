@@ -7,11 +7,51 @@ import sys
 import requests
 
 import random
+import os
+import json
 from mcap import MCAP, COMPANY_NAME
 from publish_service import VeoVideoGenerator, TelegramPublisher, load_config
 import asyncio
 import threading
 from flask_cors import CORS
+
+# Load industry mapping from nifty500.csv
+INDUSTRY_MAP = {}
+INDUSTRY_CACHE_FILE = 'industry_cache.json'
+try:
+    nifty_df = pd.read_csv('nifty500.csv')
+    for _, row in nifty_df.iterrows():
+        INDUSTRY_MAP[row['Symbol']] = row['Industry']
+except Exception as e:
+    print(f"Error loading nifty500.csv: {e}")
+
+# Load persistent cache for symbols not in Nifty 500
+industry_cache = {}
+if os.path.exists(INDUSTRY_CACHE_FILE):
+    try:
+        with open(INDUSTRY_CACHE_FILE, 'r') as f:
+            industry_cache = json.load(f)
+    except: pass
+
+def get_industry_with_fallback(symbol):
+    if symbol in INDUSTRY_MAP:
+        return INDUSTRY_MAP[symbol]
+    if symbol in industry_cache:
+        return industry_cache[symbol]
+    
+    # Fallback to yfinance (slow, so we cache it)
+    try:
+        print(f"[Industry Fallback] Fetching for {symbol}...")
+        info = yf.Ticker(f"{symbol}.NS").info
+        ind = info.get('industry', 'Unknown Sector')
+        industry_cache[symbol] = ind
+        # Save cache
+        with open(INDUSTRY_CACHE_FILE, 'w') as f:
+            json.dump(industry_cache, f)
+        return ind
+    except:
+        return 'Unknown Sector'
+
 # Redundant auth logic removed, now handled by Node Gateway on Render
 # from auth import verify_google_token, generate_jwt, login_required, admin_required, create_user, get_user, check_trial_status, ADMIN_EMAIL
 
@@ -308,9 +348,21 @@ def get_dma_price_diff_bullish():
     response['id'] = stock
     response['price'] = df.iloc[-1]['CLOSE']
     response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
-    response['mcap'] = MCAP.get(stock, 0)
+    
+    mcap_val = MCAP.get(stock, 0)
+    response['mcap'] = mcap_val
     response['name'] = COMPANY_NAME.get(stock, stock)
+    response['industry'] = get_industry_with_fallback(stock)
     response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
+    
+    # Categorize Market Type based on MCAP (Cr)
+    if mcap_val > 20000:
+        response['marketType'] = 'Large Cap'
+    elif mcap_val > 5000:
+        response['marketType'] = 'Mid Cap'
+    else:
+        response['marketType'] = 'Small Cap'
+
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
     
@@ -328,7 +380,7 @@ def get_dma_price_diff_bullish():
     dma50 = response.get('DMA_50', 0)
     dma100 = response.get('DMA_100', 0)
     price = response['price']
-
+ 
     # Bullish Condition Debug
     cond1 = response['mcap'] > MCAP_THRESHOLD
     cond2 = price > dma20 and price > dma50 and price > dma100
@@ -346,7 +398,16 @@ def get_dma_price_diff_bullish():
         # print(f"FAIL BULLISH {stock}: MCAP={cond1} PRICE>DMA={cond2} DIFF1({diff1:.2f}<{limit1:.2f})={cond3} DIFF2({diff2:.2f}<{limit2:.2f})={cond4}")
         pass
 
-    if response['mcap'] > MCAP_THRESHOLD and response['price'] > response['DMA_20'] and response['price'] > response['DMA_50']  and response['price'] > response['DMA_100']  and abs(response['price'] - response['DMA_20']) > (response['price'] * price_diff_bearish_val) and abs(response['DMA_20'] - response['DMA_50']) > (response['DMA_20'] * price_diff_bearish_val):
+    # Bearish: Price well below DMAs (breakdown/extension)
+    d20 = response.get('DMA_20')
+    d50 = response.get('DMA_50')
+    d100 = response.get('DMA_100')
+    
+    if (response['mcap'] > MCAP_THRESHOLD and 
+        d20 and d50 and d100 and
+        response['price'] < d20 and response['price'] < d50 and response['price'] < d100 and 
+        abs(response['price'] - d20) > (response['price'] * price_diff_bearish_val) and 
+        abs(d20 - d50) > (d20 * price_diff_bearish_val)):
         response['isBearish'] = 'true'
         print(f"MATCH BEARISH: {stock}")
 
@@ -427,6 +488,27 @@ def publish_stock_video():
 
     threading.Thread(target=run_publish_flow).start()
     return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202
+
+@app.route('/api/market-intelligence')
+def get_market_intelligence():
+    try:
+        from market_intelligence import generate_market_intelligence
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            # Fallback to local config if available
+            try:
+                config = load_config()
+                api_key = config.get('GOOGLE_API_KEY')
+            except: pass
+            
+        if not api_key:
+            return jsonify({"error": "GOOGLE_API_KEY not configured"}), 500
+            
+        report = generate_market_intelligence(api_key)
+        return jsonify({"report": report})
+    except Exception as e:
+        print(f"Error in /api/market-intelligence: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     port = sys.argv[1]
