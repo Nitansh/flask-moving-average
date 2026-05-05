@@ -489,25 +489,29 @@ def publish_stock_video():
     threading.Thread(target=run_publish_flow).start()
     return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202
 
-@app.route('/api/market-intelligence')
-def get_market_intelligence():
+@app.route('/api/global-cues')
+def get_global_cues():
     try:
-        from market_intelligence import generate_market_intelligence
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            # Fallback to local config if available
-            try:
-                config = load_config()
-                api_key = config.get('GOOGLE_API_KEY')
-            except: pass
-            
-        if not api_key:
-            return jsonify({"error": "GOOGLE_API_KEY not configured"}), 500
-            
-        report = generate_market_intelligence(api_key)
-        return jsonify({"report": report})
+        from market_intelligence import fetch_global_cues
+        cues = fetch_global_cues()
+        return jsonify({"cues": cues})
     except Exception as e:
-        print(f"Error in /api/market-intelligence: {e}")
+        print(f"Error in /api/global-cues: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/earnings-calendar')
+def get_earnings_calendar():
+    try:
+        from market_intelligence import get_earnings_calendar
+        # Get symbols from request or default to top
+        symbols = request.args.get('symbols')
+        if symbols:
+            symbols = symbols.split(',')
+        
+        calendar = get_earnings_calendar(symbols)
+        return jsonify({"calendar": calendar})
+    except Exception as e:
+        print(f"Error in /api/earnings-calendar: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
