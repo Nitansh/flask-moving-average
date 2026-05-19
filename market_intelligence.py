@@ -38,38 +38,86 @@ def fetch_global_cues():
         print(f"Error fetching news: {e}")
         return []
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+
+EARNINGS_CACHE = {
+    'data': None,
+    'timestamp': 0
+}
+EARNINGS_CACHE_LOCK = threading.Lock()
+EARNINGS_CACHE_TTL = 12 * 60 * 60  # Cache for 12 hours
+
+def fetch_single_ticker_calendar(symbol, today, next_30_days):
+    try:
+        ticker = yf.Ticker(f"{symbol}.NS")
+        cal = ticker.calendar
+        results = []
+        if cal and 'Earnings Date' in cal:
+            earnings_dates = cal['Earnings Date']
+            for e_date in earnings_dates:
+                if not isinstance(e_date, datetime):
+                    e_date = datetime.combine(e_date, datetime.min.time())
+                
+                if today.date() <= e_date.date() <= next_30_days.date():
+                    results.append({
+                        'symbol': symbol,
+                        'company': COMPANY_NAME.get(symbol, symbol),
+                        'date': e_date.strftime('%Y-%m-%d'),
+                        'eps_est': cal.get('Earnings Average', 'N/A'),
+                        'rev_est': cal.get('Revenue Average', 'N/A'),
+                        'sentiment': 'Neutral'
+                    })
+        return results
+    except:
+        return []
+
 def get_earnings_calendar(stocks=None):
     """Fetch earnings calendar for a list of stocks or top stocks."""
+    global EARNINGS_CACHE
+    
+    # Only use cache when querying default top stocks (no custom stocks filter)
     if not stocks:
-        stocks = get_top_stocks(150)  # Scan top 150 stocks for earnings
+        current_time = time.time()
+        with EARNINGS_CACHE_LOCK:
+            if EARNINGS_CACHE['data'] is not None and (current_time - EARNINGS_CACHE['timestamp'] < EARNINGS_CACHE_TTL):
+                print("[EARNINGS CACHE HIT] Using cached earnings calendar")
+                return EARNINGS_CACHE['data']
         
+        stocks = get_top_stocks(150)
+        is_default_query = True
+    else:
+        is_default_query = False
+
+    print(f"[EARNINGS FETCH] Fetching earnings calendar concurrently for {len(stocks)} stocks...")
     calendar = []
     today = datetime.now()
-    next_30_days = today + timedelta(days=30) # Expand to 30 days for better coverage
+    next_30_days = today + timedelta(days=30)
     
-    # Use a thread pool or simple loop for now
-    for symbol in stocks:
-        try:
-            ticker = yf.Ticker(f"{symbol}.NS")
-            cal = ticker.calendar
-            if cal and 'Earnings Date' in cal:
-                earnings_dates = cal['Earnings Date']
-                for e_date in earnings_dates:
-                    if not isinstance(e_date, datetime):
-                        e_date = datetime.combine(e_date, datetime.min.time())
-                    
-                    if today.date() <= e_date.date() <= next_30_days.date():
-                        calendar.append({
-                            'symbol': symbol,
-                            'company': COMPANY_NAME.get(symbol, symbol),
-                            'date': e_date.strftime('%Y-%m-%d'),
-                            'eps_est': cal.get('Earnings Average', 'N/A'),
-                            'rev_est': cal.get('Revenue Average', 'N/A'),
-                            'sentiment': 'Neutral' # Default since we removed AI
-                        })
-        except:
-            pass
-            
+    # Query yfinance concurrently using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=25) as executor:
+        future_to_symbol = {
+            executor.submit(fetch_single_ticker_calendar, symbol, today, next_30_days): symbol 
+            for symbol in stocks
+        }
+        
+        for future in as_completed(future_to_symbol):
+            try:
+                res = future.result()
+                if res:
+                    calendar.extend(res)
+            except:
+                pass
+                
     # Sort by date
     calendar.sort(key=lambda x: x['date'])
+    
+    # Save to cache if it was the default query
+    if is_default_query:
+        with EARNINGS_CACHE_LOCK:
+            EARNINGS_CACHE['data'] = calendar
+            EARNINGS_CACHE['timestamp'] = current_time
+            print(f"[EARNINGS CACHE] Saved {len(calendar)} calendar items to cache.")
+            
     return calendar
