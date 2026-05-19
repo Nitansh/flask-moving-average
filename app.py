@@ -72,6 +72,7 @@ YF_HEADERS = {
 STOCK_DF_CACHE = {}
 CACHE_EXPIRY_SECONDS = 12 * 60 * 60  # Cache historical data for 12 hours (historical daily bars don't change during the day)
 STOCK_DF_CACHE_LOCK = threading.Lock()
+YF_DOWNLOAD_LOCK = threading.Lock()
 
 # Replaced CustomNSEHistory with yfinance logic
 def custom_stock_df(symbol, from_date, to_date, series="EQ"):
@@ -87,8 +88,12 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
 
     try:
         ticker = f"{symbol}.NS"
-        print(f"[CACHE MISS] Downloading data for {ticker} from {from_date} to {to_date}")
-        df = yf.download(ticker, start=from_date, end=to_date, progress=False)
+        
+        # Acquire download lock to stagger simultaneous Yahoo requests
+        with YF_DOWNLOAD_LOCK:
+            time.sleep(0.15)
+            print(f"[CACHE MISS] Downloading data for {ticker} from {from_date} to {to_date}")
+            df = yf.download(ticker, start=from_date, end=to_date, progress=False)
         
         if df.empty:
             print(f"No data found for {ticker}")
