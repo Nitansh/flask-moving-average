@@ -6,6 +6,10 @@
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FLASK_DIR="$ROOT_DIR/flask-moving-average"
 LOG_DIR="/tmp"
+# Fallback for environment variables (used by Render to route traffic to this node)
+: "${RENDER_BACKEND_URL:=https://movingaverage-sh7s.onrender.com}"
+: "${HEARTBEAT_SECRET:=pi-heartbeat-2024}"
+
 # Cleanup zombie processes if they exist but aren't responding
 # sudo fuser -k 8081/tcp 4001/tcp 2>/dev/null
 # sudo pkill -9 -f service_manager.py 2>/dev/null
