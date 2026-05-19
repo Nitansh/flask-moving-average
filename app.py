@@ -5,6 +5,7 @@ from waitress import serve
 import pandas as pd
 import sys
 import requests
+import time
 
 import random
 import os
@@ -67,11 +68,26 @@ YF_HEADERS = {
 }
 
 
+# Thread-safe in-memory cache for historical stock dataframes to prevent rate-limiting and maximize scan speeds
+STOCK_DF_CACHE = {}
+CACHE_EXPIRY_SECONDS = 12 * 60 * 60  # Cache historical data for 12 hours (historical daily bars don't change during the day)
+STOCK_DF_CACHE_LOCK = threading.Lock()
+
 # Replaced CustomNSEHistory with yfinance logic
 def custom_stock_df(symbol, from_date, to_date, series="EQ"):
+    cache_key = (symbol, from_date, to_date)
+    current_time = time.time()
+    
+    with STOCK_DF_CACHE_LOCK:
+        if cache_key in STOCK_DF_CACHE:
+            cached_df, cache_time = STOCK_DF_CACHE[cache_key]
+            if current_time - cache_time < CACHE_EXPIRY_SECONDS:
+                print(f"[CACHE HIT] Using cached historical data for {symbol}")
+                return cached_df.copy()
+
     try:
         ticker = f"{symbol}.NS"
-        print(f"Downloading data for {ticker} from {from_date} to {to_date}")
+        print(f"[CACHE MISS] Downloading data for {ticker} from {from_date} to {to_date}")
         df = yf.download(ticker, start=from_date, end=to_date, progress=False)
         
         if df.empty:
@@ -85,7 +101,6 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         df = df.reset_index()
         
         # Rename columns to match expected format
-        # YFinance returns Date, Open, High, Low, Close, Adj Close, Volume
         df = df.rename(columns={
             'Date': 'DATE',
             'Open': 'OPEN',
@@ -96,8 +111,12 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         })
         
         df['SYMBOL'] = symbol
-        # Drop rows with missing Close prices to prevent NaN in technical indicators
         df = df.dropna(subset=['CLOSE'])
+        
+        if not df.empty:
+            with STOCK_DF_CACHE_LOCK:
+                STOCK_DF_CACHE[cache_key] = (df, current_time)
+                
         return df
     except Exception as e:
         print(f"Error in custom_stock_df for {symbol}: {e}")
