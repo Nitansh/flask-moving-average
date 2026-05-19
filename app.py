@@ -500,5 +500,5 @@ def get_earnings_calendar():
 
 if __name__ == '__main__':
     import os
-    port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5000)
+    port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5001)
     serve(app, host='0.0.0.0', port=int(port), threads=4)
