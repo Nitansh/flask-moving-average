@@ -499,5 +499,6 @@ def get_earnings_calendar():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = sys.argv[1]
-    serve(app, host='0.0.0.0', port=port, threads=4)
+    import os
+    port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5000)
+    serve(app, host='0.0.0.0', port=int(port), threads=4)
