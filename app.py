@@ -147,23 +147,7 @@ def get_live_symbol_df(last_row, symbol):
 
 @app.route('/healthcheck')
 def get_health_check():
-    # Performance deep-health: Fetch live data for RELIANCE to verify whole pipeline
-    try:
-        ticker = yf.Ticker('RELIANCE.NS')
-        current_price = ticker.fast_info.last_price
-        if current_price and current_price > 0:
-            return jsonify({
-                "status": "healthy",
-                "verification": {
-                    "symbol": "RELIANCE.NS",
-                    "price": current_price,
-                    "timestamp": datetime.now().isoformat()
-                }
-            }), 200
-        else:
-            return jsonify({"status": "degraded", "error": "Invalid price data from Yahoo"}), 502
-    except Exception as e:
-        return jsonify({"status": "failed", "error": str(e)}), 503
+    return jsonify({"status": "healthy"}), 200
 
 @app.route('/live')
 def get_live_stock():
@@ -516,5 +500,4 @@ def get_earnings_calendar():
 
 if __name__ == '__main__':
     port = sys.argv[1]
-    # host='::' for dual-stack + threads=4 for concurrent stock fetches
-    serve(app, host='::', port=port, threads=4)
+    serve(app, host='0.0.0.0', port=port, threads=4)

@@ -5,7 +5,7 @@
 const http = require('http');
 
 const FLASK_PORTS = [5001, 5002, 5003, 5004, 5005, 5006, 5007];
-const HOST = 'localhost';
+const HOST = '127.0.0.1';
 const BALANCER_PORT = 4001;
 
 let currentPortIndex = 0;
