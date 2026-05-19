@@ -16,6 +16,25 @@ LOG_DIR="/tmp"
 # sudo pkill -9 -f local_balancer.js 2>/dev/null
 sleep 2 # Allow OS to release sockets
 
+# Auto-install cron jobs
+if [ "$1" == "--install-cron" ]; then
+    SCRIPT_PATH=$(readlink -f "$0")
+    # Ensure script is executable
+    chmod +x "$SCRIPT_PATH"
+    
+    # Remove existing entries for this script and add new ones
+    CRON_CMD_1="*/5 9-14 * * 1-5 $SCRIPT_PATH >> /tmp/heartbeat_cron.log 2>&1"
+    CRON_CMD_2="0,5,10,15,20,25,30 15 * * 1-5 $SCRIPT_PATH >> /tmp/heartbeat_cron.log 2>&1"
+    BOOT_CMD="@reboot sleep 30 && $SCRIPT_PATH >> /tmp/heartbeat_cron.log 2>&1"
+    
+    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH"; echo "$CRON_CMD_1"; echo "$CRON_CMD_2"; echo "$BOOT_CMD") | crontab -
+    
+    echo "✅ Successfully installed cron jobs:"
+    echo "  - Runs every 5 mins from 09:00 to 14:55 on Mon-Fri (*/5 9-14 * * 1-5)"
+    echo "  - Runs every 5 mins from 15:00 to 15:30 on Mon-Fri (0,5,10,15,20,25,30 15 * * 1-5)"
+    echo "  - Runs on system bootup (@reboot)"
+    exit 0
+fi
 # =====================================================================
 # END-TO-END SETUP & DEPENDENCIES
 # =====================================================================
