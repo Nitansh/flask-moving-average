@@ -190,12 +190,40 @@ def get_live_stock():
                 last_rsi = rsi_series.iloc[-1]
                 rsi_val = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
 
-            info = ticker.info
-            current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+            # Get industry using our cached helper (much faster and avoids yfinance info limits)
+            industry = get_industry_with_fallback(symbol)
+
+            # High-precision current price derivation
+            current_price = None
+            
+            # Try fast_info first (fastest and standard for real-time yfinance price)
+            try:
+                current_price = ticker.fast_info.last_price
+            except Exception as fast_err:
+                print(f"Warning: fast_info failed for {symbol}: {fast_err}")
+
+            # Try history fallback
+            if (current_price is None or pd.isna(current_price) or current_price == 0) and not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+
+            # Try ticker.info as a last resort fallback
+            if current_price is None or pd.isna(current_price) or current_price == 0:
+                try:
+                    info = ticker.info
+                    current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                except Exception as info_err:
+                    print(f"Warning: Ticker info fallback failed for {symbol}: {info_err}")
+                    current_price = 0
+
+            # Clean and round price
+            if current_price is not None and not pd.isna(current_price):
+                current_price = round(float(current_price), 2)
+            else:
+                current_price = 0
             
             return jsonify({
                 'symbol' : symbol,
-                'industry' : info.get('industry', 'N/A'),
+                'industry' : industry,
                 'currentPrice' : current_price,
                 'rsi': rsi_val
             })
