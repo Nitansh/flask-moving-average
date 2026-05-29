@@ -151,6 +151,20 @@ def get_live_symbol_df(last_row, symbol):
         if open_price is None:
             open_price = ticker.info.get('open', 0)
 
+        # Get high-precision live volume
+        live_volume = None
+        try:
+            live_volume = fast_info.last_volume
+        except Exception as vol_err:
+            print(f"Warning: fast_info.last_volume failed for {symbol}: {vol_err}")
+
+        if live_volume is None or pd.isna(live_volume) or live_volume == 0:
+            try:
+                live_volume = ticker.info.get('volume', ticker.info.get('regularMarketVolume', 0))
+            except Exception as info_err:
+                print(f"Warning: info fallback failed for volume of {symbol}: {info_err}")
+                live_volume = 0
+
         # Convert Series to dict
         row_dict = last_row.to_dict()
 
@@ -162,12 +176,18 @@ def get_live_symbol_df(last_row, symbol):
         row_dict['CLOSE'] = last_price
         row_dict['VWAP'] = last_price
 
+        if live_volume is not None and not pd.isna(live_volume):
+            row_dict['VOLUME'] = int(live_volume)
+        else:
+            row_dict['VOLUME'] = 0
+
         # Return proper DataFrame
         return pd.DataFrame([row_dict])
 
     except Exception as e:
         print(f"Error in get_live_symbol_df: {e}")
         return pd.DataFrame()
+
 
 @app.route('/healthcheck')
 def get_health_check():
@@ -221,11 +241,39 @@ def get_live_stock():
             else:
                 current_price = 0
             
+            # Fetch high-precision live volume
+            current_volume = None
+            try:
+                current_volume = ticker.fast_info.last_volume
+            except Exception as fast_vol_err:
+                print(f"Warning: fast_info.last_volume failed for {symbol}: {fast_vol_err}")
+
+            if current_volume is None or pd.isna(current_volume) or current_volume == 0:
+                try:
+                    if not hist.empty:
+                        current_volume = hist['Volume'].iloc[-1]
+                except Exception as hist_vol_err:
+                    print(f"Warning: history fallback failed for volume of {symbol}: {hist_vol_err}")
+
+            if current_volume is None or pd.isna(current_volume) or current_volume == 0:
+                try:
+                    info = ticker.info
+                    current_volume = info.get('volume', info.get('regularMarketVolume', 0))
+                except Exception as info_vol_err:
+                    print(f"Warning: Ticker info volume fallback failed for {symbol}: {info_vol_err}")
+                    current_volume = 0
+
+            if current_volume is not None and not pd.isna(current_volume):
+                current_volume = int(current_volume)
+            else:
+                current_volume = 0
+
             return jsonify({
                 'symbol' : symbol,
                 'industry' : industry,
                 'currentPrice' : current_price,
-                'rsi': rsi_val
+                'rsi': rsi_val,
+                'volume': current_volume
             })
         except Exception as e:
             print(f"Error fetching live stock for {symbol}: {e}")
