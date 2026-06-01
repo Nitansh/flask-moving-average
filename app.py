@@ -268,12 +268,50 @@ def get_live_stock():
             else:
                 current_volume = 0
 
+            # Calculate DEMA indicators for real-time portfolio/watchlist view without loading flags
+            dema20 = None
+            dema50 = None
+            dema100 = None
+            dema200 = None
+            if not hist.empty:
+                try:
+                    dema20_series = TA.DEMA(hist, 20)
+                    if not dema20_series.empty:
+                        dema20 = round(float(dema20_series.iloc[-1]), 2) if not pd.isna(dema20_series.iloc[-1]) else None
+                except Exception as dema_err:
+                    print(f"Error calculating DEMA 20 for {symbol}: {dema_err}")
+
+                try:
+                    dema50_series = TA.DEMA(hist, 50)
+                    if not dema50_series.empty:
+                        dema50 = round(float(dema50_series.iloc[-1]), 2) if not pd.isna(dema50_series.iloc[-1]) else None
+                except Exception as dema_err:
+                    print(f"Error calculating DEMA 50 for {symbol}: {dema_err}")
+
+                try:
+                    dema100_series = TA.DEMA(hist, 100)
+                    if not dema100_series.empty:
+                        dema100 = round(float(dema100_series.iloc[-1]), 2) if not pd.isna(dema100_series.iloc[-1]) else None
+                except Exception as dema_err:
+                    print(f"Error calculating DEMA 100 for {symbol}: {dema_err}")
+
+                try:
+                    dema200_series = TA.DEMA(hist, 200)
+                    if not dema200_series.empty:
+                        dema200 = round(float(dema200_series.iloc[-1]), 2) if not pd.isna(dema200_series.iloc[-1]) else None
+                except Exception as dema_err:
+                    print(f"Error calculating DEMA 200 for {symbol}: {dema_err}")
+
             return jsonify({
                 'symbol' : symbol,
                 'industry' : industry,
                 'currentPrice' : current_price,
                 'rsi': rsi_val,
-                'volume': current_volume
+                'volume': current_volume,
+                'DMA_20': dema20,
+                'DMA_50': dema50,
+                'DMA_100': dema100,
+                'DMA_200': dema200
             })
         except Exception as e:
             print(f"Error fetching live stock for {symbol}: {e}")
