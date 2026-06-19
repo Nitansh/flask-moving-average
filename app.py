@@ -432,7 +432,6 @@ def get_dma():
         response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
         response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
-        response['exDividendDate'] = get_ex_dividend_date(stock)
         
         for item in dma_list:
             try:
@@ -557,7 +556,6 @@ def get_dma_price_diff_bullish():
 
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
-    response['exDividendDate'] = get_ex_dividend_date(stock)
     
     for item in dma_list:
         try:
