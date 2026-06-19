@@ -34,6 +34,74 @@ if os.path.exists(INDUSTRY_CACHE_FILE):
             industry_cache = json.load(f)
     except: pass
 
+# Load persistent cache for ex-dividend dates
+EX_DIVIDEND_CACHE_FILE = 'ex_dividend_cache.json'
+ex_dividend_cache = {}
+ex_dividend_cache_lock = threading.Lock()
+
+if os.path.exists(EX_DIVIDEND_CACHE_FILE):
+    try:
+        with open(EX_DIVIDEND_CACHE_FILE, 'r') as f:
+            ex_dividend_cache = json.load(f)
+    except Exception as e:
+        print(f"Error loading ex_dividend_cache.json: {e}")
+
+def save_ex_dividend_cache():
+    try:
+        with open(EX_DIVIDEND_CACHE_FILE, 'w') as f:
+            json.dump(ex_dividend_cache, f)
+    except Exception as e:
+        print(f"Error saving ex_dividend_cache.json: {e}")
+
+def get_ex_dividend_date(symbol):
+    if not symbol:
+        return None
+    current_time = time.time()
+    # Cache for 24 hours (86400 seconds)
+    cache_ttl = 24 * 60 * 60
+    
+    with ex_dividend_cache_lock:
+        if symbol in ex_dividend_cache:
+            cached_data = ex_dividend_cache[symbol]
+            # Check if cache is not expired
+            if current_time - cached_data.get('fetched_at', 0) < cache_ttl:
+                return cached_data.get('date')
+    
+    # Cache miss or expired
+    ex_date_str = None
+    try:
+        ticker_symbol = f"{symbol}.NS"
+        ticker = yf.Ticker(ticker_symbol)
+        
+        # Method 1: Try ticker.calendar (which is fast)
+        cal = ticker.calendar
+        if cal and 'Ex-Dividend Date' in cal:
+            ex_date = cal['Ex-Dividend Date']
+            if ex_date:
+                if isinstance(ex_date, (datetime, date)):
+                    ex_date_str = ex_date.strftime('%Y-%m-%d')
+                else:
+                    ex_date_str = str(ex_date)
+                    
+        # Method 2: Try ticker.info fallback if method 1 failed
+        if not ex_date_str:
+            info = ticker.info
+            ex_div_epoch = info.get('exDividendDate')
+            if ex_div_epoch:
+                dt = datetime.fromtimestamp(ex_div_epoch)
+                ex_date_str = dt.strftime('%Y-%m-%d')
+    except Exception as e:
+        print(f"Error fetching ex_dividend_date for {symbol}: {e}")
+        
+    with ex_dividend_cache_lock:
+        ex_dividend_cache[symbol] = {
+            'date': ex_date_str,
+            'fetched_at': current_time
+        }
+        save_ex_dividend_cache()
+        
+    return ex_date_str
+
 def get_industry_with_fallback(symbol):
     if symbol in INDUSTRY_MAP:
         return INDUSTRY_MAP[symbol]
@@ -311,7 +379,8 @@ def get_live_stock():
                 'DMA_20': dema20,
                 'DMA_50': dema50,
                 'DMA_100': dema100,
-                'DMA_200': dema200
+                'DMA_200': dema200,
+                'exDividendDate': get_ex_dividend_date(symbol)
             })
         except Exception as e:
             print(f"Error fetching live stock for {symbol}: {e}")
@@ -363,6 +432,7 @@ def get_dma():
         response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
         response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+        response['exDividendDate'] = get_ex_dividend_date(stock)
         
         for item in dma_list:
             try:
@@ -487,6 +557,7 @@ def get_dma_price_diff_bullish():
 
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
     response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+    response['exDividendDate'] = get_ex_dividend_date(stock)
     
     for item in dma_list:
         try:
