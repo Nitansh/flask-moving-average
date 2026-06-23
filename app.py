@@ -270,16 +270,19 @@ def get_live_stock():
             ticker_symbol = f"{symbol}.NS"
             ticker = yf.Ticker(ticker_symbol)
             
-            # Fetch 1 year of history for stable RSI calculation
-            hist = ticker.history(period="1y")
-            rsi_val = None
-            if not hist.empty and len(hist) > 14:
-                rsi_series = TA.RSI(hist)
-                last_rsi = rsi_series.iloc[-1]
-                rsi_val = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
-
             # Get industry using our cached helper (much faster and avoids yfinance info limits)
             industry = get_industry_with_fallback(symbol)
+
+            # Calculate dates for 1 year of history
+            one_day_before = datetime.now() + timedelta(days=-1)
+            year = one_day_before.year
+            month = one_day_before.month
+            day = one_day_before.day
+            from_date = date(year-1, month, day)
+            to_date = date(year, month, day)
+            
+            # Fetch using custom_stock_df (uses STOCK_DF_CACHE)
+            df = custom_stock_df(symbol=symbol, from_date=from_date, to_date=to_date, series="EQ")
 
             # High-precision current price derivation
             current_price = None
@@ -291,8 +294,8 @@ def get_live_stock():
                 print(f"Warning: fast_info failed for {symbol}: {fast_err}")
 
             # Try history fallback
-            if (current_price is None or pd.isna(current_price) or current_price == 0) and not hist.empty:
-                current_price = hist['Close'].iloc[-1]
+            if (current_price is None or pd.isna(current_price) or current_price == 0) and not df.empty:
+                current_price = df['CLOSE'].iloc[-1]
 
             # Try ticker.info as a last resort fallback
             if current_price is None or pd.isna(current_price) or current_price == 0:
@@ -318,8 +321,8 @@ def get_live_stock():
 
             if current_volume is None or pd.isna(current_volume) or current_volume == 0:
                 try:
-                    if not hist.empty:
-                        current_volume = hist['Volume'].iloc[-1]
+                    if not df.empty:
+                        current_volume = df['VOLUME'].iloc[-1]
                 except Exception as hist_vol_err:
                     print(f"Warning: history fallback failed for volume of {symbol}: {hist_vol_err}")
 
@@ -336,37 +339,92 @@ def get_live_stock():
             else:
                 current_volume = 0
 
-            # Calculate DEMA indicators for real-time portfolio/watchlist view without loading flags
-            dema20 = None
-            dema50 = None
-            dema100 = None
-            dema200 = None
-            if not hist.empty:
+            # If custom_stock_df failed/returned empty, fallback to ticker.history as safety fallback
+            if df.empty:
+                print(f"Warning: custom_stock_df returned empty for {symbol}, falling back to ticker.history(period='1y')")
+                hist = ticker.history(period="1y")
+                # Format to look like custom_stock_df output
+                if not hist.empty:
+                    df = hist.reset_index()
+                    df = df.rename(columns={
+                        'Date': 'DATE',
+                        'Open': 'OPEN',
+                        'High': 'HIGH',
+                        'Low': 'LOW',
+                        'Close': 'CLOSE',
+                        'Volume': 'VOLUME'
+                    })
+                    df['SYMBOL'] = symbol
+
+            # Append live price row to the end of history for real-time RSI & DEMA calculations
+            if not df.empty:
                 try:
-                    dema20_series = TA.DEMA(hist, 20)
-                    if not dema20_series.empty:
-                        dema20 = round(float(dema20_series.iloc[-1]), 2) if not pd.isna(dema20_series.iloc[-1]) else None
+                    last_row = df.iloc[-1]
+                    row_dict = last_row.to_dict()
+                    
+                    # Convert date to datetime if it is a Timestamp
+                    row_date = row_dict['DATE']
+                    if isinstance(row_date, pd.Timestamp):
+                        row_date = row_date.to_pydatetime()
+                    elif isinstance(row_date, str):
+                        try:
+                            row_date = datetime.strptime(row_date, '%Y-%m-%d')
+                        except:
+                            row_date = datetime.now()
+
+                    row_dict['DATE'] = row_date + timedelta(days=1)
+                    row_dict['OPEN'] = current_price
+                    row_dict['PREV. CLOSE'] = row_dict['CLOSE']
+                    row_dict['LTP'] = current_price
+                    row_dict['CLOSE'] = current_price
+                    row_dict['VWAP'] = current_price
+                    row_dict['VOLUME'] = current_volume
+                    
+                    live_row = pd.DataFrame([row_dict])
+                    df = pd.concat([df, live_row], ignore_index=True)
+                except Exception as append_err:
+                    print(f"Error appending live row for {symbol}: {append_err}")
+
+            rsi_val = None
+            if not df.empty and len(df) > 14:
+                try:
+                    rsi_series = TA.RSI(df)
+                    last_rsi = rsi_series.iloc[-1]
+                    rsi_val = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
+                except Exception as rsi_err:
+                    print(f"Error calculating RSI for {symbol}: {rsi_err}")
+
+            # Calculate DEMA indicators for real-time portfolio/watchlist view without loading flags
+            dma20 = None
+            dma50 = None
+            dma100 = None
+            dma200 = None
+            if not df.empty:
+                try:
+                    dma20_series = TA.DEMA(df, 20)
+                    if not dma20_series.empty:
+                        dma20 = round(float(dma20_series.iloc[-1]), 2) if not pd.isna(dma20_series.iloc[-1]) else None
                 except Exception as dema_err:
                     print(f"Error calculating DEMA 20 for {symbol}: {dema_err}")
 
                 try:
-                    dema50_series = TA.DEMA(hist, 50)
-                    if not dema50_series.empty:
-                        dema50 = round(float(dema50_series.iloc[-1]), 2) if not pd.isna(dema50_series.iloc[-1]) else None
+                    dma50_series = TA.DEMA(df, 50)
+                    if not dma50_series.empty:
+                        dma50 = round(float(dma50_series.iloc[-1]), 2) if not pd.isna(dma50_series.iloc[-1]) else None
                 except Exception as dema_err:
                     print(f"Error calculating DEMA 50 for {symbol}: {dema_err}")
 
                 try:
-                    dema100_series = TA.DEMA(hist, 100)
-                    if not dema100_series.empty:
-                        dema100 = round(float(dema100_series.iloc[-1]), 2) if not pd.isna(dema100_series.iloc[-1]) else None
+                    dma100_series = TA.DEMA(df, 100)
+                    if not dma100_series.empty:
+                        dma100 = round(float(dma100_series.iloc[-1]), 2) if not pd.isna(dma100_series.iloc[-1]) else None
                 except Exception as dema_err:
                     print(f"Error calculating DEMA 100 for {symbol}: {dema_err}")
 
                 try:
-                    dema200_series = TA.DEMA(hist, 200)
-                    if not dema200_series.empty:
-                        dema200 = round(float(dema200_series.iloc[-1]), 2) if not pd.isna(dema200_series.iloc[-1]) else None
+                    dma200_series = TA.DEMA(df, 200)
+                    if not dma200_series.empty:
+                        dma200 = round(float(dma200_series.iloc[-1]), 2) if not pd.isna(dma200_series.iloc[-1]) else None
                 except Exception as dema_err:
                     print(f"Error calculating DEMA 200 for {symbol}: {dema_err}")
 
@@ -376,10 +434,10 @@ def get_live_stock():
                 'currentPrice' : current_price,
                 'rsi': rsi_val,
                 'volume': current_volume,
-                'DMA_20': dema20,
-                'DMA_50': dema50,
-                'DMA_100': dema100,
-                'DMA_200': dema200,
+                'DMA_20': dma20,
+                'DMA_50': dma50,
+                'DMA_100': dma100,
+                'DMA_200': dma200,
                 'exDividendDate': get_ex_dividend_date(symbol)
             })
         except Exception as e:
