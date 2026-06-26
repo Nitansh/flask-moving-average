@@ -42,26 +42,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
 
-EARNINGS_CACHE_FILE = 'earnings_calendar_cache.json'
-EARNINGS_CACHE_LOCK = threading.Lock()
-EARNINGS_CACHE_TTL = 24 * 60 * 60  # Cache for 24 hours
-
-def load_earnings_cache():
-    if os.path.exists(EARNINGS_CACHE_FILE):
-        try:
-            with open(EARNINGS_CACHE_FILE, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading earnings cache: {e}")
-    return {'data': None, 'timestamp': 0}
-
-def save_earnings_cache(cache_data):
-    try:
-        with open(EARNINGS_CACHE_FILE, 'w') as f:
-            json.dump(cache_data, f)
-    except Exception as e:
-        print(f"Error saving earnings cache: {e}")
-
 def fetch_single_ticker_calendar(symbol, today, next_30_days):
     try:
         ticker = yf.Ticker(f"{symbol}.NS")
@@ -88,20 +68,8 @@ def fetch_single_ticker_calendar(symbol, today, next_30_days):
 
 def get_earnings_calendar(stocks=None):
     """Fetch earnings calendar for a list of stocks or top stocks."""
-    
-    # Only use cache when querying default top stocks (no custom stocks filter)
     if not stocks:
-        current_time = time.time()
-        with EARNINGS_CACHE_LOCK:
-            cache = load_earnings_cache()
-            if cache['data'] is not None and (current_time - cache['timestamp'] < EARNINGS_CACHE_TTL):
-                print("[EARNINGS CACHE HIT] Using cached earnings calendar")
-                return cache['data']
-        
         stocks = get_top_stocks(150)
-        is_default_query = True
-    else:
-        is_default_query = False
 
     print(f"[EARNINGS FETCH] Fetching earnings calendar concurrently for {len(stocks)} stocks...")
     calendar = []
@@ -125,21 +93,4 @@ def get_earnings_calendar(stocks=None):
                 
     # Sort by date
     calendar.sort(key=lambda x: x['date'])
-    
-    # Save to cache if it was the default query
-    if is_default_query:
-        with EARNINGS_CACHE_LOCK:
-            # If the fetch returned absolutely nothing (e.g. rate-limited), fallback to existing cache data if available
-            old_cache = load_earnings_cache()
-            if not calendar and old_cache['data']:
-                print("[EARNINGS FETCH FAILED] Yahoo Finance rate-limited or failed. Falling back to stale cache.")
-                return old_cache['data']
-                
-            cache_data = {
-                'data': calendar,
-                'timestamp': current_time
-            }
-            save_earnings_cache(cache_data)
-            print(f"[EARNINGS CACHE] Saved {len(calendar)} calendar items to cache.")
-            
     return calendar

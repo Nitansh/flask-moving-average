@@ -6,6 +6,7 @@ import pandas as pd
 import sys
 import requests
 import time
+from functools import wraps
 
 import random
 import os
@@ -15,6 +16,25 @@ from publish_service import VeoVideoGenerator, TelegramPublisher, load_config
 import asyncio
 import threading
 from flask_cors import CORS
+
+# Simple route/endpoint caching decorator
+def cache_endpoint(ttl_seconds=300):
+    def decorator(f):
+        cache = {}
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            # Use full path including query parameters as cache key
+            key = request.full_path
+            now = time.time()
+            if key in cache:
+                val, expires = cache[key]
+                if now < expires:
+                    return val
+            response = f(*args, **kwargs)
+            cache[key] = (response, now + ttl_seconds)
+            return response
+        return decorated_function
+    return decorator
 
 # Load industry mapping from nifty500.csv
 INDUSTRY_MAP = {}
@@ -136,31 +156,17 @@ YF_HEADERS = {
 }
 
 
-# Thread-safe in-memory cache for historical stock dataframes to prevent rate-limiting and maximize scan speeds
-STOCK_DF_CACHE = {}
-CACHE_EXPIRY_SECONDS = 12 * 60 * 60  # Cache historical data for 12 hours (historical daily bars don't change during the day)
-STOCK_DF_CACHE_LOCK = threading.Lock()
 YF_DOWNLOAD_LOCK = threading.Lock()
 
 # Replaced CustomNSEHistory with yfinance logic
 def custom_stock_df(symbol, from_date, to_date, series="EQ"):
-    cache_key = (symbol, from_date, to_date)
-    current_time = time.time()
-    
-    with STOCK_DF_CACHE_LOCK:
-        if cache_key in STOCK_DF_CACHE:
-            cached_df, cache_time = STOCK_DF_CACHE[cache_key]
-            if current_time - cache_time < CACHE_EXPIRY_SECONDS:
-                print(f"[CACHE HIT] Using cached historical data for {symbol}")
-                return cached_df.copy()
-
     try:
         ticker = f"{symbol}.NS"
         
         # Acquire download lock to stagger simultaneous Yahoo requests
         with YF_DOWNLOAD_LOCK:
             time.sleep(0.15)
-            print(f"[CACHE MISS] Downloading data for {ticker} from {from_date} to {to_date}")
+            print(f"Downloading data for {ticker} from {from_date} to {to_date}")
             df = yf.download(ticker, start=from_date, end=to_date, progress=False)
         
         if df.empty:
@@ -185,11 +191,6 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         
         df['SYMBOL'] = symbol
         df = df.dropna(subset=['CLOSE'])
-        
-        if not df.empty:
-            with STOCK_DF_CACHE_LOCK:
-                STOCK_DF_CACHE[cache_key] = (df, current_time)
-                
         return df
     except Exception as e:
         print(f"Error in custom_stock_df for {symbol}: {e}")
@@ -204,7 +205,7 @@ PRICE_DIFF_BEARISH_PERCENTAGE = 5
 MCAP_THRESHOLD = 10
 TIME_DELTA = -1
 
-def get_live_symbol_df(last_row, symbol):
+def get_live_symbol_df(last_row, symbol, today):
     try:
         ticker_symbol = f"{symbol}.NS"
         ticker = yf.Ticker(ticker_symbol)
@@ -237,7 +238,7 @@ def get_live_symbol_df(last_row, symbol):
         row_dict = last_row.to_dict()
 
         # Modify values
-        row_dict['DATE'] = row_dict['DATE'] + timedelta(days=1)
+        row_dict['DATE'] = today
         row_dict['OPEN'] = open_price
         row_dict['PREV. CLOSE'] = row_dict['CLOSE']
         row_dict['LTP'] = last_price
@@ -274,14 +275,11 @@ def get_live_stock():
             industry = get_industry_with_fallback(symbol)
 
             # Calculate dates for 1 year of history
-            one_day_before = datetime.now() + timedelta(days=-1)
-            year = one_day_before.year
-            month = one_day_before.month
-            day = one_day_before.day
-            from_date = date(year-1, month, day)
-            to_date = date(year, month, day)
+            today = datetime.now().date()
+            from_date = today - timedelta(days=365)
+            to_date = today + timedelta(days=1)
             
-            # Fetch using custom_stock_df (uses STOCK_DF_CACHE)
+            # Fetch using custom_stock_df
             df = custom_stock_df(symbol=symbol, from_date=from_date, to_date=to_date, series="EQ")
 
             # High-precision current price derivation
@@ -359,29 +357,28 @@ def get_live_stock():
             # Append live price row to the end of history for real-time RSI & DEMA calculations
             if not df.empty:
                 try:
-                    last_row = df.iloc[-1]
-                    row_dict = last_row.to_dict()
-                    
-                    # Convert date to datetime if it is a Timestamp
-                    row_date = row_dict['DATE']
-                    if isinstance(row_date, pd.Timestamp):
-                        row_date = row_date.to_pydatetime()
-                    elif isinstance(row_date, str):
-                        try:
-                            row_date = datetime.strptime(row_date, '%Y-%m-%d')
-                        except:
-                            row_date = datetime.now()
+                    last_row_date = df.iloc[-1]['DATE']
+                    if isinstance(last_row_date, pd.Timestamp):
+                        last_row_date = last_row_date.date()
+                    elif isinstance(last_row_date, str):
+                        last_row_date = datetime.strptime(last_row_date.split(' ')[0], '%Y-%m-%d').date()
 
-                    row_dict['DATE'] = row_date + timedelta(days=1)
-                    row_dict['OPEN'] = current_price
-                    row_dict['PREV. CLOSE'] = row_dict['CLOSE']
-                    row_dict['LTP'] = current_price
-                    row_dict['CLOSE'] = current_price
-                    row_dict['VWAP'] = current_price
-                    row_dict['VOLUME'] = current_volume
-                    
-                    live_row = pd.DataFrame([row_dict])
-                    df = pd.concat([df, live_row], ignore_index=True)
+                    if last_row_date < today:
+                        last_row = df.iloc[-1]
+                        row_dict = last_row.to_dict()
+                        row_dict['DATE'] = today
+                        row_dict['OPEN'] = current_price
+                        row_dict['PREV. CLOSE'] = row_dict['CLOSE']
+                        row_dict['LTP'] = current_price
+                        row_dict['CLOSE'] = current_price
+                        row_dict['VWAP'] = current_price
+                        row_dict['VOLUME'] = current_volume
+                        
+                        live_row = pd.DataFrame([row_dict])
+                        df = pd.concat([df, live_row], ignore_index=True)
+                    else:
+                        df.loc[df.index[-1], 'CLOSE'] = current_price
+                        df.loc[df.index[-1], 'VOLUME'] = current_volume
                 except Exception as append_err:
                     print(f"Error appending live row for {symbol}: {append_err}")
 
@@ -461,22 +458,32 @@ def get_dma():
             
         print(f"DEBUG: / (DMA) request for symbol: {stock}")
         dma_list = dma_param.split(',')
-        one_day_before = datetime.now() + timedelta(days=-1)
-        year = one_day_before.year
-        month = one_day_before.month
-        day = one_day_before.day
-        df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+        today = datetime.now().date()
+        from_date = today - timedelta(days=365)
+        to_date = today + timedelta(days=1)
+        df = custom_stock_df(symbol=stock, from_date=from_date, to_date=to_date, series="EQ")
         if df.empty:
             print(f"Skipping {stock}: No invalid historical data found.")
             return jsonify({})
             
-        # Reversal removed: DF from custom_stock_df is already chronological (Day 1, Day 2, etc.)
-        
-        # Take the last row (newest historical row) to build the live row
-        live_row = get_live_symbol_df(df.iloc[-1], stock)
-        
-        # Append live price to the end (CHRONOLOGICAL)
-        df = pd.concat([df, live_row], ignore_index=True)
+        # Append live price to the end (CHRONOLOGICAL) if last row is older than today
+        last_row_date = df.iloc[-1]['DATE']
+        if isinstance(last_row_date, pd.Timestamp):
+            last_row_date = last_row_date.date()
+        elif isinstance(last_row_date, str):
+            last_row_date = datetime.strptime(last_row_date.split(' ')[0], '%Y-%m-%d').date()
+
+        if last_row_date < today:
+            live_row = get_live_symbol_df(df.iloc[-1], stock, today)
+            df = pd.concat([df, live_row], ignore_index=True)
+        else:
+            # Update today's existing bar with live price
+            ticker_symbol = f"{stock}.NS"
+            ticker = yf.Ticker(ticker_symbol)
+            current_price = ticker.fast_info.last_price
+            if current_price is None or pd.isna(current_price) or current_price == 0:
+                current_price = ticker.info.get('currentPrice', df.iloc[-1]['CLOSE'])
+            df.loc[df.index[-1], 'CLOSE'] = current_price
         
         rsi = TA.RSI(df)
         last_rsi = rsi.iloc[-1]
@@ -571,22 +578,32 @@ def get_dma_price_diff_bullish():
     price_diff_bearish_val = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
     
     time_delta = int( request.args.get('timeDelta', 0 )) * TIME_DELTA
-    one_day_before = datetime.now() + timedelta(days=time_delta)
-    year = one_day_before.year
-    month = one_day_before.month
-    day = one_day_before.day
-    df = custom_stock_df(symbol=stock, from_date=date(year-1,month,day), to_date=date(year,month,day), series="EQ")
+    today = (datetime.now() + timedelta(days=time_delta)).date()
+    from_date = today - timedelta(days=365)
+    to_date = today + timedelta(days=1)
+    df = custom_stock_df(symbol=stock, from_date=from_date, to_date=to_date, series="EQ")
     if df.empty:
         print(f"Skipping {stock}: No invalid historical data found.")
         return jsonify({})
+    
+    # Append live price to the end (CHRONOLOGICAL) if last row is older than today
+    last_row_date = df.iloc[-1]['DATE']
+    if isinstance(last_row_date, pd.Timestamp):
+        last_row_date = last_row_date.date()
+    elif isinstance(last_row_date, str):
+        last_row_date = datetime.strptime(last_row_date.split(' ')[0], '%Y-%m-%d').date()
 
-    # Reversal removed: DF from custom_stock_df is already chronological
-    
-    # Take the last row (newest historical row) to build high-precision live row
-    live_row = get_live_symbol_df(df.iloc[-1], stock)
-    
-    # Append live price to the end (CHRONOLOGICAL)
-    df = pd.concat([df, live_row], ignore_index=True)
+    if last_row_date < today:
+        live_row = get_live_symbol_df(df.iloc[-1], stock, today)
+        df = pd.concat([df, live_row], ignore_index=True)
+    else:
+        # Update today's existing bar with live price
+        ticker_symbol = f"{stock}.NS"
+        ticker = yf.Ticker(ticker_symbol)
+        current_price = ticker.fast_info.last_price
+        if current_price is None or pd.isna(current_price) or current_price == 0:
+            current_price = ticker.info.get('currentPrice', df.iloc[-1]['CLOSE'])
+        df.loc[df.index[-1], 'CLOSE'] = current_price
     
     print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
 
@@ -739,6 +756,7 @@ def publish_stock_video():
     return jsonify({"status": "queued", "message": "Video generation and publishing started in background"}), 202
 
 @app.route('/api/global-cues')
+@cache_endpoint(ttl_seconds=86400)
 def get_global_cues():
     try:
         from market_intelligence import fetch_global_cues
@@ -749,7 +767,8 @@ def get_global_cues():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/earnings-calendar')
-def get_earnings_calendar():
+@cache_endpoint(ttl_seconds=86400)
+def get_earnings_calendar_route():
     try:
         from market_intelligence import get_earnings_calendar
         # Get symbols from request or default to top
