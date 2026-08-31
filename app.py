@@ -777,6 +777,11 @@ def get_earnings_calendar_route():
             symbols = symbols.split(',')
         
         calendar = get_earnings_calendar(symbols)
+        return jsonify({"calendar": calendar})
+    except Exception as e:
+        print(f"Error in /api/earnings-calendar: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/mainboard-ipos')
 def get_mainboard_ipos_route():
     try:
