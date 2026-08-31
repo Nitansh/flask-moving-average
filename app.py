@@ -777,10 +777,16 @@ def get_earnings_calendar_route():
             symbols = symbols.split(',')
         
         calendar = get_earnings_calendar(symbols)
-        return jsonify({"calendar": calendar})
+@app.route('/api/mainboard-ipos')
+def get_mainboard_ipos_route():
+    try:
+        from ipo_service import get_mainboard_ipos_cached
+        refresh = request.args.get('refresh', 'false').lower() == 'true'
+        data = get_mainboard_ipos_cached(force_refresh=refresh)
+        return jsonify(data), 200
     except Exception as e:
-        print(f"Error in /api/earnings-calendar: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in /api/mainboard-ipos: {e}")
+        return jsonify({"error": str(e), "summary": {}, "ipos": []}), 500
 
 if __name__ == '__main__':
     import os
