@@ -193,20 +193,20 @@ MAINBOARD_DIRECTORY = [
     },
     {
         "name": "Pranav Constructions",
-        "url": "https://www.investorgain.com/gmp/pranav-constructions-ipo/2085/",
+        "url": "https://www.investorgain.com/gmp/pranav-constructions-ipo/1662/",
         "open_date": "7-Sep",
         "close_date": "9-Sep",
         "boa_date": "10-Sep",
-        "listing_date": "12-Sep",
-        "status": "Upcoming",
+        "listing_date": "15-Sep",
+        "status": "Open",
         "lot_size": "120",
         "subscription": "-",
-        "rating": "3",
+        "rating": "4",
         "issue_size": "₹351.00 Cr",
         "default_price": 124.0,
-        "default_gmp": 34.0,
-        "default_gain_pct": 27.42,
-        "chittorgarh_url": "https://www.chittorgarh.com/ipo/pranav-constructions-ipo/2845/"
+        "default_gmp": 44.0,
+        "default_gain_pct": 35.48,
+        "chittorgarh_url": "https://www.chittorgarh.com/ipo/pranav-constructions-ipo/2850/"
     },
     {
         "name": "Deepa Jewellers",
@@ -482,16 +482,61 @@ MAINBOARD_DIRECTORY = [
     }
 ]
 
+from datetime import datetime, date
+
+def calculate_ipo_status(open_str, close_str, listing_str=None, current_status=None):
+    try:
+        now = date.today()
+        year = now.year
+
+        def parse_d(d_str):
+            if not d_str or d_str == '-' or 'tba' in d_str.lower():
+                return None
+            parts = d_str.strip().split('-')
+            if len(parts) >= 2:
+                day = int(parts[0])
+                month_str = parts[1][:3].title()
+                return datetime.strptime(f"{day}-{month_str}-{year}", "%d-%b-%Y").date()
+            return None
+
+        open_d = parse_d(open_str)
+        close_d = parse_d(close_str)
+        list_d = parse_d(listing_str)
+
+        if open_d and close_d:
+            if open_d <= now <= close_d:
+                if now == close_d:
+                    return "Closing Today"
+                return "Open"
+            elif now < open_d:
+                return "Upcoming"
+            elif now > close_d:
+                if list_d and now >= list_d:
+                    return "Listed"
+                return "Closed"
+    except Exception:
+        pass
+    return current_status or "Upcoming"
+
 def fetch_single_gmp(item, headers):
+    item = dict(item)
     url = item.get("url")
     default_price = float(item.get("default_price", 0.0))
     default_gmp = float(item.get("default_gmp", 0.0))
     default_gain = float(item.get("default_gain_pct", 0.0))
     default_est = round(default_price + default_gmp, 2) if default_price > 0 else 0.0
+    calc_status = calculate_ipo_status(
+        item.get("open_date"),
+        item.get("close_date"),
+        item.get("listing_date"),
+        item.get("status")
+    )
+    item['status'] = calc_status
 
     if not url:
         return {
             **item,
+            'status': calc_status,
             'id': f"mainboard-ipo-{re.sub(r'[^a-z0-9]+', '-', item['name'].lower())}",
             'board_type': 'Mainboard',
             'gmp': default_gmp,
