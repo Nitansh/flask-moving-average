@@ -309,6 +309,39 @@ def get_live_stock():
                 current_price = round(float(current_price), 2)
             else:
                 current_price = 0
+
+            # Derive previous close for daily change & P&L calculations
+            prev_close = None
+            try:
+                prev_close = ticker.fast_info.previous_close
+            except Exception as prev_err:
+                pass
+
+            if (prev_close is None or pd.isna(prev_close) or prev_close == 0) and not df.empty:
+                try:
+                    if len(df) >= 2:
+                        prev_close = df['CLOSE'].iloc[-2]
+                    elif len(df) == 1:
+                        prev_close = df['CLOSE'].iloc[-1]
+                except Exception:
+                    pass
+
+            if prev_close is None or pd.isna(prev_close) or prev_close == 0:
+                try:
+                    prev_close = ticker.info.get('previousClose', ticker.info.get('regularMarketPreviousClose', 0))
+                except Exception:
+                    pass
+
+            if prev_close is not None and not pd.isna(prev_close) and prev_close > 0:
+                prev_close = round(float(prev_close), 2)
+            else:
+                prev_close = None
+
+            change = None
+            change_percent = None
+            if current_price and prev_close and prev_close > 0:
+                change = round(current_price - prev_close, 2)
+                change_percent = round(((current_price - prev_close) / prev_close) * 100, 2)
             
             # Fetch high-precision live volume
             current_volume = None
@@ -429,6 +462,9 @@ def get_live_stock():
                 'symbol' : symbol,
                 'industry' : industry,
                 'currentPrice' : current_price,
+                'previousClose': prev_close,
+                'change': change,
+                'changePercent': change_percent,
                 'rsi': rsi_val,
                 'volume': current_volume,
                 'DMA_20': dma20,
@@ -793,7 +829,59 @@ def get_mainboard_ipos_route():
         print(f"Error in /api/mainboard-ipos: {e}")
         return jsonify({"error": str(e), "summary": {}, "ipos": []}), 500
 
+SECTOR_INDICES = [
+    {'sector': 'Information Technology', 'symbol': 'NIFTY_IT', 'ticker': '^CNXIT', 'label': 'Nifty IT'},
+    {'sector': 'FMCG & Consumer Goods', 'symbol': 'NIFTY_FMCG', 'ticker': '^CNXFMCG', 'label': 'Nifty FMCG'},
+    {'sector': 'Energy & Utilities', 'symbol': 'NIFTY_ENERGY', 'ticker': '^CNXENERGY', 'label': 'Nifty Energy'},
+    {'sector': 'Banking & Financials', 'symbol': 'BANKNIFTY', 'ticker': '^NSEBANK', 'label': 'Bank Nifty'},
+    {'sector': 'Pharmaceuticals & Healthcare', 'symbol': 'NIFTY_PHARMA', 'ticker': '^CNXPHARMA', 'label': 'Nifty Pharma'},
+    {'sector': 'Automotive', 'symbol': 'NIFTY_AUTO', 'ticker': '^CNXAUTO', 'label': 'Nifty Auto'},
+    {'sector': 'Metals & Mining', 'symbol': 'NIFTY_METAL', 'ticker': '^CNXMETAL', 'label': 'Nifty Metal'},
+    {'sector': 'Real Estate', 'symbol': 'NIFTY_REALTY', 'ticker': '^CNXREALTY', 'label': 'Nifty Realty'},
+    {'sector': 'Infrastructure', 'symbol': 'NIFTY_INFRA', 'ticker': '^CNXINFRA', 'label': 'Nifty Infra'},
+    {'sector': 'Broad Market Benchmark', 'symbol': 'NIFTY_50', 'ticker': '^NSEI', 'label': 'Nifty 50'}
+]
+
+@app.route('/api/sector-trends')
+@cache_endpoint(ttl_seconds=300)
+def get_sector_trends_route():
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        def fetch_sector(item):
+            try:
+                t = yf.Ticker(item['ticker'])
+                p = t.fast_info.last_price
+                prev = t.fast_info.previous_close
+                if p is None or pd.isna(p):
+                    return None
+                chg = (p - prev) if (prev and not pd.isna(prev)) else 0
+                pct = ((p - prev) / prev * 100) if (prev and not pd.isna(prev) and prev > 0) else 0
+                return {
+                    'sector': item['sector'],
+                    'symbol': item['symbol'],
+                    'ticker': item['ticker'],
+                    'label': item['label'],
+                    'price': round(float(p), 2),
+                    'previousClose': round(float(prev), 2) if prev else None,
+                    'change': round(float(chg), 2),
+                    'changePercent': round(float(pct), 2),
+                    'momentum': 'BULLISH' if pct > 0.5 else ('BEARISH' if pct < -0.5 else 'NEUTRAL')
+                }
+            except Exception as ex:
+                print(f"Error fetching sector {item['label']}: {ex}")
+                return None
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(fetch_sector, SECTOR_INDICES))
+        
+        valid_sectors = [r for r in results if r is not None]
+        return jsonify({"sectors": valid_sectors}), 200
+    except Exception as e:
+        print(f"Error in /api/sector-trends: {e}")
+        return jsonify({"error": str(e), "sectors": []}), 500
+
 if __name__ == '__main__':
     import os
     port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5001)
     serve(app, host='0.0.0.0', port=int(port), threads=4)
+
