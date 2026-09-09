@@ -524,9 +524,22 @@ def get_dma():
         rsi = TA.RSI(df)
         last_rsi = rsi.iloc[-1]
         
+        cur_p = df.iloc[-1]['CLOSE']
+        prev_c = None
+        if len(df) >= 2:
+            try:
+                prev_c = round(float(df.iloc[-2]['CLOSE']), 2)
+            except Exception:
+                pass
+        chg = round(float(cur_p - prev_c), 2) if (cur_p and prev_c) else None
+        chg_pct = round(float(((cur_p - prev_c) / prev_c) * 100), 2) if (cur_p and prev_c) else None
+
         response['symbol'] = stock
         response['id'] = stock
-        response['price'] = df.iloc[-1]['CLOSE']
+        response['price'] = cur_p
+        response['previousClose'] = prev_c
+        response['change'] = chg
+        response['changePercent'] = chg_pct
         response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
         response['mcap'] = MCAP.get(stock, 0)
         response['name'] = COMPANY_NAME.get(stock, stock)
@@ -646,9 +659,29 @@ def get_dma_price_diff_bullish():
     rsi = TA.RSI(df)
     last_rsi = rsi.iloc[-1]
 
+    cur_p = df.iloc[-1]['CLOSE']
+    prev_c = None
+    if len(df) >= 2:
+        try:
+            prev_c = round(float(df.iloc[-2]['CLOSE']), 2)
+        except Exception:
+            pass
+    if prev_c is None and 'PREV. CLOSE' in df.columns:
+        try:
+            prev_val = df.iloc[-1]['PREV. CLOSE']
+            if prev_val and not pd.isna(prev_val) and prev_val > 0:
+                prev_c = round(float(prev_val), 2)
+        except Exception:
+            pass
+    chg = round(float(cur_p - prev_c), 2) if (cur_p and prev_c) else None
+    chg_pct = round(float(((cur_p - prev_c) / prev_c) * 100), 2) if (cur_p and prev_c) else None
+
     response['symbol'] = stock
     response['id'] = stock
-    response['price'] = df.iloc[-1]['CLOSE']
+    response['price'] = cur_p
+    response['previousClose'] = prev_c
+    response['change'] = chg
+    response['changePercent'] = chg_pct
     response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
     
     mcap_val = MCAP.get(stock, 0)
