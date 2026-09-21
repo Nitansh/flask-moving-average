@@ -545,7 +545,8 @@ def get_dma():
         response['name'] = COMPANY_NAME.get(stock, stock)
         response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
         response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
-        response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+        nse_stock = stock if stock.endswith('-EQ') else f"{stock}-EQ"
+        response['chart'] = f'https://charting.nseindia.com/?symbol={nse_stock}'
         
         for item in dma_list:
             try:
@@ -699,7 +700,8 @@ def get_dma_price_diff_bullish():
         response['marketType'] = 'Small Cap'
 
     response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
-    response['chart'] = 'https://in.tradingview.com/chart/?symbol=NSE%3A'+stock
+    nse_stock = stock if stock.endswith('-EQ') else f"{stock}-EQ"
+    response['chart'] = f'https://charting.nseindia.com/?symbol={nse_stock}'
     
     for item in dma_list:
         try:
