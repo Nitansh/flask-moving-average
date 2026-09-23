@@ -25,6 +25,11 @@ class BotConfig:
     MAX_DAILY_LOSS_PCT = 5.0 # Stop trading if daily portfolio drawdown reaches -5% (-₹1,00,000)
     HARD_STOP_LOSS_PCT = 3.5 # Hard stop loss per trade (-3.5%)
 
+    # --- A/B Testing Strategy Split (Half Tranche Averaging vs Half One-Shot) ---
+    AB_TEST_ENABLED = True
+    MAX_TRANCHE_POSITIONS = 4 # 4 slots for 50k Tranche Averaging (up to ₹2.5L each)
+    MAX_ONE_SHOT_POSITIONS = 4 # 4 slots for ₹2.5L One-Shot Lump Sum
+
     # --- Strategy Parameters (DEMA Stage-Rider) ---
     MIN_HEADROOM_TO_100_DEMA = 4.0 # Minimum +4.0% distance from price to 100 DEMA to enter
     RSI_MIN = 48.0 # Minimum RSI (14) for entry

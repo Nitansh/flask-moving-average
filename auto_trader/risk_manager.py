@@ -22,7 +22,52 @@ class RiskManager:
         return float(state.get("tranche_size", BotConfig.TRANCHE_SIZE))
 
     @staticmethod
-    def can_open_new_position():
+    def get_strategy_counts():
+        """Returns the number of active positions under TRANCHE_AVERAGING and ONE_SHOT."""
+        positions = get_open_positions()
+        tranche_count = sum(1 for p in positions if p.get("strategy_type", "TRANCHE_AVERAGING") == "TRANCHE_AVERAGING")
+        one_shot_count = sum(1 for p in positions if p.get("strategy_type") == "ONE_SHOT")
+        return tranche_count, one_shot_count
+
+    @staticmethod
+    def determine_next_strategy():
+        """
+        Determines whether the next entry should use TRANCHE_AVERAGING or ONE_SHOT.
+        Maintains a 50/50 balance (max 4 TRANCHE, max 4 ONE_SHOT out of 8 total).
+        """
+        state = get_bot_state()
+        available_cash = float(state.get("available_cash", 0.0))
+        max_positions = int(state.get("max_positions", BotConfig.MAX_ACTIVE_POSITIONS))
+        positions = get_open_positions()
+
+        if len(positions) >= max_positions:
+            return None, f"Maximum stock buckets reached ({len(positions)}/{max_positions})"
+
+        tranche_count, one_shot_count = RiskManager.get_strategy_counts()
+        bucket_size = RiskManager.get_bucket_size()
+        tranche_size = RiskManager.get_tranche_size()
+
+        max_tranche_slots = getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 4)
+        max_one_shot_slots = getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", 4)
+
+        can_do_tranche = (tranche_count < max_tranche_slots) and (available_cash >= tranche_size * 0.5)
+        can_do_one_shot = (one_shot_count < max_one_shot_slots) and (available_cash >= bucket_size * 0.4)
+
+        if not can_do_tranche and not can_do_one_shot:
+            return None, "No available slots or insufficient cash for both strategies"
+
+        # Balance strategies: pick whichever has fewer active positions
+        if can_do_tranche and can_do_one_shot:
+            if one_shot_count < tranche_count:
+                return "ONE_SHOT", "OK"
+            return "TRANCHE_AVERAGING", "OK"
+        elif can_do_tranche:
+            return "TRANCHE_AVERAGING", "OK"
+        else:
+            return "ONE_SHOT", "OK"
+
+    @staticmethod
+    def can_open_new_position(strategy_type=None):
         """Checks if capital and slot limits allow opening a new trade."""
         state = get_bot_state()
         available_cash = float(state.get("available_cash", 0.0))
@@ -32,15 +77,33 @@ class RiskManager:
         if len(open_positions) >= max_positions:
             return False, f"Maximum stock buckets reached ({len(open_positions)}/{max_positions})"
 
-        tranche_size = RiskManager.get_tranche_size()
-        if available_cash < (tranche_size * 0.5):
-            return False, f"Insufficient cash for initial tranche (Available: ₹{available_cash:.2f}, Required: ~₹{tranche_size:.2f})"
+        if strategy_type:
+            tranche_count, one_shot_count = RiskManager.get_strategy_counts()
+            if strategy_type == "ONE_SHOT":
+                if one_shot_count >= getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", 4):
+                    return False, f"Maximum One-Shot positions reached ({one_shot_count}/4)"
+                bucket_size = RiskManager.get_bucket_size()
+                if available_cash < (bucket_size * 0.4):
+                    return False, f"Insufficient cash for One-Shot entry (Available: ₹{available_cash:.2f}, Needed: ~₹{bucket_size * 0.4:.2f})"
+                return True, "OK"
+            else:
+                if tranche_count >= getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 4):
+                    return False, f"Maximum Tranche Averaging positions reached ({tranche_count}/4)"
+                tranche_size = RiskManager.get_tranche_size()
+                if available_cash < (tranche_size * 0.5):
+                    return False, f"Insufficient cash for Tranche entry (Available: ₹{available_cash:.2f})"
+                return True, "OK"
 
-        return True, "OK"
+        strat, reason = RiskManager.determine_next_strategy()
+        return (strat is not None), reason
 
     @staticmethod
     def can_add_tranche(position):
         """Checks if an existing stock position can accept another ₹50,000 tranche."""
+        # ONE_SHOT positions are lump-sum and never scaled into
+        if position.get("strategy_type") == "ONE_SHOT":
+            return False, "One-Shot strategy does not allow additional averaging tranches"
+
         state = get_bot_state()
         available_cash = float(state.get("available_cash", 0.0))
         tranche_size = RiskManager.get_tranche_size()
@@ -74,9 +137,18 @@ class RiskManager:
         return qty
 
     @staticmethod
-    def calculate_position_size(price):
-        """Initial position size equals one tranche (₹50,000)."""
-        return RiskManager.calculate_tranche_qty(price)
+    def calculate_position_size(price, strategy_type="TRANCHE_AVERAGING"):
+        """Calculates initial entry size based on strategy type (Tranche ₹50k vs One-Shot ₹2.5L)."""
+        if price <= 0:
+            return 0
+        state = get_bot_state()
+        available_cash = float(state.get("available_cash", 0.0))
+
+        if strategy_type == "ONE_SHOT":
+            budget = min(RiskManager.get_bucket_size(), available_cash)
+            return int(budget // price)
+        else:
+            return RiskManager.calculate_tranche_qty(price)
 
     @staticmethod
     def check_daily_drawdown():

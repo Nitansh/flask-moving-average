@@ -137,7 +137,8 @@ class BotRunner:
                     # Record partial trade
                     pnl = (live_price - pos["buy_price"]) * sell_qty
                     pnl_pct = ((live_price - pos["buy_price"]) / pos["buy_price"]) * 100.0
-                    record_trade(symbol, "PARTIAL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"))
+                    strat_type = pos.get("strategy_type", "TRANCHE_AVERAGING")
+                    record_trade(symbol, "PARTIAL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type)
                     
                     # Update position and available cash
                     pos["current_qty"] -= sell_qty
@@ -155,7 +156,8 @@ class BotRunner:
                 if order_res.get("status") == "SUCCESS":
                     pnl = (live_price - pos["buy_price"]) * sell_qty
                     pnl_pct = ((live_price - pos["buy_price"]) / pos["buy_price"]) * 100.0
-                    record_trade(symbol, "FULL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"))
+                    strat_type = pos.get("strategy_type", "TRANCHE_AVERAGING")
+                    record_trade(symbol, "FULL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type)
 
                     delete_open_position(symbol)
                     state = get_bot_state()
@@ -170,7 +172,7 @@ class BotRunner:
                 log_event("INFO", f"{symbol}: {eval_res.get('reason')}")
 
             # -----------------------------------------------------------------
-            # Tranche Averaging & Scaling In (Add ₹50k shots up to ₹2.5L bucket)
+            # Tranche Averaging & Scaling In (Allowed only for TRANCHE_AVERAGING)
             # -----------------------------------------------------------------
             if action == "NONE" and pos.get("phase") in ["ENTRY", "TARGET_1_LOCKED"]:
                 can_scale, _ = RiskManager.can_add_tranche(pos)
@@ -199,21 +201,21 @@ class BotRunner:
                                 pos["stop_loss"] = round(new_avg_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
 
                                 save_open_position(pos)
-                                record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}")
+                                record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}", strategy_type="TRANCHE_AVERAGING")
 
                                 state = get_bot_state()
                                 update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
                                 log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
 
     def _scan_and_enter(self, candidate_stocks=None):
-        """Scans candidate stocks meeting strategy criteria and places initial ₹50,000 BUY order."""
+        """Scans candidate stocks meeting strategy criteria and places BUY order (Tranche vs One-Shot)."""
         stocks_to_scan = candidate_stocks or []
         if not stocks_to_scan:
             return
 
         for stock in stocks_to_scan:
-            can_open, _ = RiskManager.can_open_new_position()
-            if not can_open:
+            strategy_type, strat_reason = RiskManager.determine_next_strategy()
+            if not strategy_type:
                 break
 
             symbol = stock.get("symbol")
@@ -228,7 +230,7 @@ class BotRunner:
             is_valid, reason = StrategyEngine.evaluate_entry(stock)
             if is_valid:
                 price = float(stock.get("price") or stock.get("currentPrice") or 0.0)
-                qty = RiskManager.calculate_position_size(price)
+                qty = RiskManager.calculate_position_size(price, strategy_type=strategy_type)
                 if qty <= 0:
                     continue
 
@@ -240,6 +242,7 @@ class BotRunner:
 
                     pos = {
                         "symbol": symbol,
+                        "strategy_type": strategy_type,
                         "initial_qty": qty,
                         "current_qty": qty,
                         "buy_price": exec_price,
@@ -256,12 +259,101 @@ class BotRunner:
                         "entry_date": datetime.now(IST).strftime("%Y-%m-%d")
                     }
                     save_open_position(pos)
-                    record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #1 (Initial): {reason}")
+                    
+                    trade_note = f"A/B [{strategy_type}]: {reason}"
+                    record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type)
 
                     state = get_bot_state()
                     new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)
                     update_bot_state(available_cash=new_cash)
-                    log_event("SUCCESS", f"Opened new bucket in {symbol} [Tranche 1/5]: {qty} shares @ ₹{exec_price:.2f} (₹{invested:.2f}/₹{RiskManager.get_bucket_size():.0f}). SL set at ₹{stop_loss:.2f}")
+                    
+                    strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
+                    log_event("SUCCESS", f"Opened new [{strat_label}] in {symbol}: {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
+
+    def compute_performance_matrix(self):
+        """
+        Computes side-by-side performance analytics for A/B Testing:
+        Tranche Averaging (₹50k shots up to ₹2.5L) vs One-Shot (₹2.5L lump-sum).
+        """
+        all_trades = get_trades(limit=500)
+        open_positions = get_open_positions()
+
+        def analyze_strategy(strat_key):
+            strat_trades = [t for t in all_trades if t.get("strategy_type", "TRANCHE_AVERAGING") == strat_key]
+            strat_positions = [p for p in open_positions if p.get("strategy_type", "TRANCHE_AVERAGING") == strat_key]
+
+            # Closed/Partial sell trades
+            sell_trades = [t for t in strat_trades if "SELL" in t.get("trade_type", "")]
+            winning_trades = [t for t in sell_trades if (t.get("realized_pnl") or 0.0) > 0]
+            losing_trades = [t for t in sell_trades if (t.get("realized_pnl") or 0.0) < 0]
+
+            total_trades_count = len(sell_trades)
+            win_count = len(winning_trades)
+            loss_count = len(losing_trades)
+            win_rate = round((win_count / total_trades_count * 100.0), 1) if total_trades_count > 0 else 0.0
+
+            realized_pnl = sum((t.get("realized_pnl") or 0.0) for t in sell_trades)
+            gross_profit = sum((t.get("realized_pnl") or 0.0) for t in winning_trades)
+            gross_loss = abs(sum((t.get("realized_pnl") or 0.0) for t in losing_trades))
+
+            profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 1.0)
+            avg_return_pct = round(sum((t.get("pnl_percent") or 0.0) for t in sell_trades) / total_trades_count, 2) if total_trades_count > 0 else 0.0
+
+            # Unrealized P&L from open positions
+            unrealized_pnl = sum(((p["current_price"] - p["buy_price"]) * p["current_qty"]) for p in strat_positions)
+            active_invested = sum(p.get("invested_amount") or (p["buy_price"] * p["current_qty"]) for p in strat_positions)
+
+            net_pnl = realized_pnl + unrealized_pnl
+
+            # Best & worst trade
+            best_trade = max([t.get("realized_pnl", 0.0) for t in sell_trades], default=0.0)
+            worst_trade = min([t.get("realized_pnl", 0.0) for t in sell_trades], default=0.0)
+
+            return {
+                "strategyType": strat_key,
+                "activePositions": len(strat_positions),
+                "maxSlots": 4,
+                "capitalInvested": round(active_invested, 2),
+                "totalCompletedTrades": total_trades_count,
+                "winningTrades": win_count,
+                "losingTrades": loss_count,
+                "winRatePct": win_rate,
+                "realizedPnl": round(realized_pnl, 2),
+                "unrealizedPnl": round(unrealized_pnl, 2),
+                "netPnl": round(net_pnl, 2),
+                "grossProfit": round(gross_profit, 2),
+                "grossLoss": round(gross_loss, 2),
+                "profitFactor": profit_factor,
+                "avgReturnPct": avg_return_pct,
+                "bestTradePnl": round(best_trade, 2),
+                "worstTradePnl": round(worst_trade, 2)
+            }
+
+        tranche_metrics = analyze_strategy("TRANCHE_AVERAGING")
+        one_shot_metrics = analyze_strategy("ONE_SHOT")
+
+        # Determine leader
+        if tranche_metrics["netPnl"] > one_shot_metrics["netPnl"]:
+            leader = "TRANCHE_AVERAGING"
+            leader_label = "Tranche Averaging (Scaling In)"
+            delta_pnl = round(tranche_metrics["netPnl"] - one_shot_metrics["netPnl"], 2)
+        elif one_shot_metrics["netPnl"] > tranche_metrics["netPnl"]:
+            leader = "ONE_SHOT"
+            leader_label = "One-Shot (Lump Sum)"
+            delta_pnl = round(one_shot_metrics["netPnl"] - tranche_metrics["netPnl"], 2)
+        else:
+            leader = "TIE"
+            leader_label = "Performance Equal / Tie"
+            delta_pnl = 0.0
+
+        return {
+            "trancheAveraging": tranche_metrics,
+            "oneShot": one_shot_metrics,
+            "leader": leader,
+            "leaderLabel": leader_label,
+            "deltaPnl": delta_pnl,
+            "sampleDaysCount": 0 # Increments as bot runs
+        }
 
     def get_status(self):
         """Returns full snapshot of Auto-Trader state for the frontend GUI."""
@@ -269,6 +361,7 @@ class BotRunner:
         positions = get_open_positions()
         trades = get_trades(limit=20)
         logs = get_recent_logs(limit=40)
+        perf_matrix = self.compute_performance_matrix()
 
         # Calculate metrics
         total_invested = sum(p["current_price"] * p["current_qty"] for p in positions)
@@ -293,7 +386,8 @@ class BotRunner:
             "lastScanTime": self.last_scan_time,
             "positions": positions,
             "trades": trades,
-            "logs": logs
+            "logs": logs,
+            "performanceMatrix": perf_matrix
         }
 
 # Global singleton runner instance

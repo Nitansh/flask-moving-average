@@ -177,3 +177,100 @@ def test_kite_client_paper_execution():
     sell_res = client.place_sell_order("SBIN", 50, 850.0, "Target Reached")
     assert sell_res["status"] == "SUCCESS"
     assert "PAPER" in sell_res["order_id"]
+
+def test_ab_strategy_determination_and_balancing():
+    """Bot should balance positions between TRANCHE_AVERAGING and ONE_SHOT (max 4 each)."""
+    from auto_trader.db import save_open_position, delete_open_position, get_open_positions
+
+    # Clear open positions
+    for p in get_open_positions():
+        delete_open_position(p["symbol"])
+
+    # Initially empty, starts with TRANCHE_AVERAGING or ONE_SHOT
+    strat, reason = RiskManager.determine_next_strategy()
+    assert strat in ["TRANCHE_AVERAGING", "ONE_SHOT"]
+
+    # If 4 TRANCHE positions exist, next should strictly be ONE_SHOT
+    for i in range(4):
+        save_open_position({
+            "symbol": f"TR_STOCK_{i}",
+            "strategy_type": "TRANCHE_AVERAGING",
+            "initial_qty": 10,
+            "current_qty": 10,
+            "buy_price": 500.0,
+            "current_price": 500.0,
+            "stop_loss": 480.0
+        })
+
+    strat, _ = RiskManager.determine_next_strategy()
+    assert strat == "ONE_SHOT"
+
+    # Fill 4 ONE_SHOT positions as well (4 + 4 = 8 total)
+    for i in range(4):
+        save_open_position({
+            "symbol": f"OS_STOCK_{i}",
+            "strategy_type": "ONE_SHOT",
+            "initial_qty": 100,
+            "current_qty": 100,
+            "buy_price": 500.0,
+            "current_price": 500.0,
+            "stop_loss": 480.0
+        })
+
+    # Now all 8 slots are full
+    strat, reason = RiskManager.determine_next_strategy()
+    assert strat is None
+    assert "Maximum stock buckets reached" in reason
+
+def test_one_shot_position_sizing_and_no_scaling():
+    """ONE_SHOT positions receive full ₹2.5L lump sum and reject scale-in attempts."""
+    from auto_trader.db import delete_open_position, get_open_positions
+
+    for p in get_open_positions():
+        delete_open_position(p["symbol"])
+
+    # Stock at ₹1000: One-shot receives 250,000 / 1000 = 250 shares
+    os_qty = RiskManager.calculate_position_size(price=1000.0, strategy_type="ONE_SHOT")
+    assert os_qty == 250
+
+    # Tranche receives 50,000 / 1000 = 50 shares
+    tr_qty = RiskManager.calculate_position_size(price=1000.0, strategy_type="TRANCHE_AVERAGING")
+    assert tr_qty == 50
+
+    # ONE_SHOT position cannot add tranches
+    os_pos = {
+        "symbol": "TRENT",
+        "strategy_type": "ONE_SHOT",
+        "initial_qty": 250,
+        "current_qty": 250,
+        "buy_price": 1000.0,
+        "tranches_count": 1,
+        "invested_amount": 250000.0
+    }
+    can_scale, reason = RiskManager.can_add_tranche(os_pos)
+    assert can_scale is False
+    assert "One-Shot" in reason
+
+def test_performance_matrix_computation():
+    """BotRunner compute_performance_matrix should accurately compare both strategies."""
+    from auto_trader.bot_runner import bot_runner
+    from auto_trader.db import record_trade, save_open_position, delete_open_position, get_open_positions
+
+    for p in get_open_positions():
+        delete_open_position(p["symbol"])
+
+    # Record 1 winning trade for Tranche Averaging
+    record_trade("STOCK_A", "FULL_SELL", 100, 100.0, 110.0, 1000.0, 10.0, "Target Reached", strategy_type="TRANCHE_AVERAGING")
+    # Record 1 losing trade for One-Shot
+    record_trade("STOCK_B", "FULL_SELL", 200, 100.0, 95.0, -1000.0, -5.0, "Stop Loss", strategy_type="ONE_SHOT")
+
+    matrix = bot_runner.compute_performance_matrix()
+    assert "trancheAveraging" in matrix
+    assert "oneShot" in matrix
+    assert matrix["trancheAveraging"]["realizedPnl"] == 1000.0
+    assert matrix["trancheAveraging"]["winRatePct"] == 100.0
+    assert matrix["oneShot"]["realizedPnl"] == -1000.0
+    assert matrix["oneShot"]["winRatePct"] == 0.0
+    assert matrix["leader"] == "TRANCHE_AVERAGING"
+    assert matrix["deltaPnl"] == 2000.0
+

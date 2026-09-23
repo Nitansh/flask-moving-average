@@ -55,6 +55,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS bot_positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT UNIQUE,
+                strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING', -- TRANCHE_AVERAGING, ONE_SHOT
                 initial_qty INTEGER,
                 current_qty INTEGER,
                 buy_price REAL,
@@ -74,12 +75,15 @@ def init_db():
             )
         """)
 
-        # Add tranches_count and invested_amount if missing in existing table
+        # Add tranches_count, invested_amount, strategy_type if missing in existing table
         try:
             conn.execute("ALTER TABLE bot_positions ADD COLUMN tranches_count INTEGER DEFAULT 1")
         except Exception: pass
         try:
             conn.execute("ALTER TABLE bot_positions ADD COLUMN invested_amount REAL DEFAULT 0.0")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_positions ADD COLUMN strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING'")
         except Exception: pass
 
         # 3. Completed Trades
@@ -87,7 +91,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS bot_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT,
-                trade_type TEXT, -- BUY, PARTIAL_SELL, FULL_SELL
+                strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING', -- TRANCHE_AVERAGING, ONE_SHOT
+                trade_type TEXT, -- BUY, PARTIAL_SELL, FULL_SELL, BUY_TRANCHE
                 quantity INTEGER,
                 entry_price REAL,
                 exit_price REAL,
@@ -97,6 +102,10 @@ def init_db():
                 executed_at TEXT
             )
         """)
+
+        try:
+            conn.execute("ALTER TABLE bot_trades ADD COLUMN strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING'")
+        except Exception: pass
 
         # 4. Chronological Audit Logs
         conn.execute("""
@@ -157,10 +166,11 @@ def save_open_position(pos):
     with conn:
         conn.execute("""
             INSERT OR REPLACE INTO bot_positions 
-            (symbol, initial_qty, current_qty, buy_price, current_price, stop_loss, dema_100, dema_200, dema_20, dema_50, phase, tranches_count, invested_amount, days_at_100_dema, last_dema_100_check_date, entry_date, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (symbol, strategy_type, initial_qty, current_qty, buy_price, current_price, stop_loss, dema_100, dema_200, dema_20, dema_50, phase, tranches_count, invested_amount, days_at_100_dema, last_dema_100_check_date, entry_date, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            pos["symbol"], pos["initial_qty"], pos["current_qty"], pos["buy_price"], pos["current_price"],
+            pos["symbol"], pos.get("strategy_type", "TRANCHE_AVERAGING"),
+            pos["initial_qty"], pos["current_qty"], pos["buy_price"], pos["current_price"],
             pos["stop_loss"], pos.get("dema_100"), pos.get("dema_200"), pos.get("dema_20"), pos.get("dema_50"),
             pos.get("phase", "ENTRY"), pos.get("tranches_count", 1), pos.get("invested_amount", 0.0),
             pos.get("days_at_100_dema", 0), pos.get("last_dema_100_check_date"),
@@ -172,14 +182,14 @@ def delete_open_position(symbol):
     with conn:
         conn.execute("DELETE FROM bot_positions WHERE symbol = ?", (symbol,))
 
-def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl, pnl_pct, reason):
+def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl, pnl_pct, reason, strategy_type="TRANCHE_AVERAGING"):
     conn = get_connection()
     with conn:
         conn.execute("""
-            INSERT INTO bot_trades (symbol, trade_type, quantity, entry_price, exit_price, realized_pnl, pnl_percent, reason, executed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bot_trades (symbol, strategy_type, trade_type, quantity, entry_price, exit_price, realized_pnl, pnl_percent, reason, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            symbol, trade_type, quantity, entry_price, exit_price, round(pnl, 2), round(pnl_pct, 2), reason,
+            symbol, strategy_type, trade_type, quantity, entry_price, exit_price, round(pnl, 2), round(pnl_pct, 2), reason,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
 
