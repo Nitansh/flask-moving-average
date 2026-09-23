@@ -913,7 +913,95 @@ def get_sector_trends_route():
         return jsonify({"sectors": valid_sectors}), 200
     except Exception as e:
         print(f"Error in /api/sector-trends: {e}")
-        return jsonify({"error": str(e), "sectors": []}), 500
+# ==========================================
+# AUTO-TRADER REST API ENDPOINTS
+# ==========================================
+try:
+    from auto_trader import bot_runner, BotConfig
+    from auto_trader.db import update_bot_state, get_open_positions, get_trades, get_recent_logs
+
+    @app.route('/api/autotrader/status', methods=['GET'])
+    def get_autotrader_status():
+        try:
+            return jsonify(bot_runner.get_status()), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/toggle', methods=['POST'])
+    def toggle_autotrader():
+        try:
+            data = request.get_json(silent=True) or {}
+            action = data.get("action") # "start" or "stop"
+            status = bot_runner.get_status()
+            is_currently_running = status.get("isRunning", False)
+            
+            if action == "start" or (action is None and not is_currently_running):
+                success, msg = bot_runner.start()
+            else:
+                success, msg = bot_runner.stop()
+                
+            return jsonify({"success": success, "message": msg, "status": bot_runner.get_status()}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/config', methods=['POST'])
+    def update_autotrader_config():
+        try:
+            data = request.get_json(silent=True) or {}
+            allowed_keys = {
+                "mode": str,
+                "total_capital": float,
+                "available_cash": float,
+                "max_positions": int,
+                "partial_profit_pct": float,
+                "stagnation_days": int
+            }
+            updates = {}
+            for k, typ in allowed_keys.items():
+                if k in data and data[k] is not None:
+                    updates[k] = typ(data[k])
+                    
+            if updates:
+                update_bot_state(**updates)
+            return jsonify({"success": True, "status": bot_runner.get_status()}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/manual-trigger', methods=['POST'])
+    def trigger_autotrader_scan():
+        try:
+            data = request.get_json(silent=True) or {}
+            candidate_stocks = data.get("candidates", [])
+            bot_runner.evaluate_cycle(candidate_stocks=candidate_stocks)
+            return jsonify({"success": True, "message": "Evaluation cycle executed successfully", "status": bot_runner.get_status()}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/positions', methods=['GET'])
+    def get_autotrader_positions():
+        try:
+            return jsonify({"positions": get_open_positions()}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/trades', methods=['GET'])
+    def get_autotrader_trades():
+        try:
+            limit = int(request.args.get("limit", 50))
+            return jsonify({"trades": get_trades(limit=limit)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/logs', methods=['GET'])
+    def get_autotrader_logs():
+        try:
+            limit = int(request.args.get("limit", 100))
+            return jsonify({"logs": get_recent_logs(limit=limit)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+except Exception as e:
+    print(f"Notice: Auto-trader endpoints initialization error: {e}")
 
 if __name__ == '__main__':
     import os

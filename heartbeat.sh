@@ -10,6 +10,26 @@ LOG_DIR="/tmp"
 : "${RENDER_BACKEND_URL:=https://movingaverage-sh7s.onrender.com}"
 : "${HEARTBEAT_SECRET:=pi-heartbeat-2024}"
 
+# Auto-Trader & Kite Connect Credentials (can be passed via Google Cloud Console, env, or .env file)
+: "${AUTOTRADER_MODE:=PAPER}"
+: "${KITE_API_KEY:=}"
+: "${KITE_API_SECRET:=}"
+: "${KITE_ACCESS_TOKEN:=}"
+: "${KITE_USER_ID:=}"
+: "${KITE_TOTP_KEY:=}"
+export AUTOTRADER_MODE KITE_API_KEY KITE_API_SECRET KITE_ACCESS_TOKEN KITE_USER_ID KITE_TOTP_KEY
+
+# Source .env file if present
+if [ -f "$FLASK_DIR/.env" ]; then
+    set -a
+    source "$FLASK_DIR/.env" 2>/dev/null || true
+    set +a
+elif [ -f "$ROOT_DIR/.env" ]; then
+    set -a
+    source "$ROOT_DIR/.env" 2>/dev/null || true
+    set +a
+fi
+
 # Cleanup zombie processes if they exist but aren't responding
 # sudo fuser -k 8081/tcp 4001/tcp 2>/dev/null
 # sudo pkill -9 -f service_manager.py 2>/dev/null

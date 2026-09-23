@@ -7,3 +7,5 @@ lib/
 lib64
 pyvenv.cfg
 To
+*.sqlite
+*.db

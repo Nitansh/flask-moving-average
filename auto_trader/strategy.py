@@ -1,0 +1,164 @@
+"""
+DEMA Stage-Rider Strategy Engine
+Implements the Asymmetric Profit Strategy:
+- Locks 30% profit at 100 DEMA resistance & moves SL to breakeven
+- Detects stagnation at 100 DEMA (> 3 days)
+- Activates Mega-Runner mode upon 200 DEMA breakout (trailing 20 DEMA)
+"""
+from datetime import datetime
+from .config import BotConfig
+
+class StrategyEngine:
+    @staticmethod
+    def evaluate_entry(stock_data):
+        """
+        Evaluates whether a stock meets all BUY entry criteria:
+        1. Price > 20 DEMA > 50 DEMA
+        2. RSI between 48 and 62
+        3. Upside room to 100 DEMA is at least +4.0%
+        """
+        price = stock_data.get("price") or stock_data.get("currentPrice") or 0.0
+        dema_20 = stock_data.get("DMA_20") or stock_data.get("dema_20") or 0.0
+        dema_50 = stock_data.get("DMA_50") or stock_data.get("dema_50") or 0.0
+        dema_100 = stock_data.get("DMA_100") or stock_data.get("dema_100") or 0.0
+        rsi = stock_data.get("rsi") or stock_data.get("RSI") or 0.0
+
+        if not (price and dema_20 and dema_50 and dema_100):
+            return False, "Missing required DEMA values"
+
+        # 1. Trend Alignment
+        if not (price > dema_20 > dema_50):
+            return False, "Not in Price > 20 DEMA > 50 DEMA structure"
+
+        # 2. RSI Momentum Filter
+        if not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
+            return False, f"RSI {rsi:.1f} outside optimal range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
+
+        # 3. Minimum Headroom to 100 DEMA (Risk-to-Reward)
+        if dema_100 > price:
+            headroom_pct = ((dema_100 - price) / price) * 100.0
+            if headroom_pct < BotConfig.MIN_HEADROOM_TO_100_DEMA:
+                return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
+        else:
+            # If price is already above 100 DEMA, verify distance to 200 DEMA if available
+            dema_200 = stock_data.get("DMA_200") or stock_data.get("dema_200")
+            if dema_200 and dema_200 > price:
+                headroom_200 = ((dema_200 - price) / price) * 100.0
+                if headroom_200 < BotConfig.MIN_HEADROOM_TO_100_DEMA:
+                    return False, f"Insufficient headroom to 200 DEMA (+{headroom_200:.1f}%)"
+
+        return True, "Strong momentum setup with favorable risk-to-reward"
+
+    @staticmethod
+    def evaluate_exit(position, current_price, current_dema):
+        """
+        Evaluates an active position against targets, resistances, trailing stops, and stop-loss.
+        Returns:
+            action: 'NONE', 'PARTIAL_SELL', 'FULL_SELL'
+            quantity_ratio: float (0.0 to 1.0)
+            new_stop_loss: float or None
+            new_phase: str or None
+            reason: str
+        """
+        buy_price = position["buy_price"]
+        current_qty = position["current_qty"]
+        initial_qty = position["initial_qty"]
+        stop_loss = position.get("stop_loss", buy_price * (1 - BotConfig.HARD_STOP_LOSS_PCT / 100.0))
+        phase = position.get("phase", "ENTRY")
+        days_at_100 = position.get("days_at_100_dema", 0)
+
+        dema_100 = current_dema.get("dema_100") or position.get("dema_100")
+        dema_200 = current_dema.get("dema_200") or position.get("dema_200")
+        dema_20 = current_dema.get("dema_20") or position.get("dema_20")
+        dema_50 = current_dema.get("dema_50") or position.get("dema_50")
+
+        # ----------------------------------------------------
+        # 1. HARD STOP-LOSS or BREAK BELOW 50 DEMA
+        # ----------------------------------------------------
+        if current_price <= stop_loss:
+            return {
+                "action": "FULL_SELL",
+                "ratio": 1.0,
+                "reason": f"Stop-Loss hit at ₹{current_price:.2f} (SL: ₹{stop_loss:.2f})",
+                "new_phase": "STOPPED_OUT"
+            }
+
+        if dema_50 and current_price < (dema_50 * 0.995):
+            return {
+                "action": "FULL_SELL",
+                "ratio": 1.0,
+                "reason": f"Trend breakdown: Price closed below 50 DEMA (₹{dema_50:.2f})",
+                "new_phase": "STOPPED_OUT"
+            }
+
+        # ----------------------------------------------------
+        # 2. MEGA-RUNNER MODE (Active after 200 DEMA Breakout)
+        # ----------------------------------------------------
+        if phase == "RUNNER_ACTIVE":
+            # Trail with 20 DEMA: Exit only if price drops below 20 DEMA
+            if dema_20 and current_price < dema_20:
+                return {
+                    "action": "FULL_SELL",
+                    "ratio": 1.0,
+                    "reason": f"Mega-Runner Exit: Closed below trailing 20 DEMA (₹{dema_20:.2f})",
+                    "new_phase": "COMPLETED"
+                }
+            # Dynamically raise stop-loss as 20 DEMA climbs
+            updated_sl = max(stop_loss, dema_20 * 0.99) if dema_20 else stop_loss
+            return {
+                "action": "NONE",
+                "ratio": 0.0,
+                "new_stop_loss": updated_sl,
+                "reason": f"Mega-Runner Active: Riding above 20 DEMA (₹{dema_20:.2f})"
+            }
+
+        # ----------------------------------------------------
+        # 3. 200 DEMA BREAKOUT CHECK (Trigger Mega-Runner)
+        # ----------------------------------------------------
+        if dema_200 and current_price >= (dema_200 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)):
+            # Stock broke cleanly above 200 DEMA! Transition to Mega-Runner
+            new_sl = max(stop_loss, dema_20 or dema_100 or buy_price)
+            return {
+                "action": "NONE",
+                "ratio": 0.0,
+                "new_phase": "RUNNER_ACTIVE",
+                "new_stop_loss": new_sl,
+                "reason": f"🚀 200 DEMA Breakout (> {BotConfig.DEMA_200_BREAKOUT_PCT}%). Activated Mega-Runner Mode trailing 20 DEMA!"
+            }
+
+        # ----------------------------------------------------
+        # 4. 100 DEMA RESISTANCE & PARTIAL PROFIT LOCKING
+        # ----------------------------------------------------
+        if dema_100 and phase == "ENTRY":
+            resistance_price = dema_100 * (BotConfig.DEMA_100_RESISTANCE_PCT / 100.0)
+            breakout_price = dema_100 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)
+
+            # Check if stock has reached 100 DEMA Resistance (99.9%)
+            if current_price >= resistance_price and current_price < breakout_price:
+                # Sell 30% of the position to lock in profit
+                sell_qty = max(1, int(round(initial_qty * (BotConfig.PARTIAL_PROFIT_PCT / 100.0))))
+                # Move Stop Loss to Breakeven (+0.5% buffer for brokerage/DP charges)
+                breakeven_sl = buy_price * 1.005
+
+                return {
+                    "action": "PARTIAL_SELL",
+                    "quantity": min(sell_qty, current_qty),
+                    "new_phase": "TARGET_1_LOCKED",
+                    "new_stop_loss": max(stop_loss, breakeven_sl),
+                    "reason": f"💰 Reached 100 DEMA Resistance (₹{dema_100:.2f}). Locked {BotConfig.PARTIAL_PROFIT_PCT}% profit & moved SL to breakeven (₹{breakeven_sl:.2f})"
+                }
+
+        # ----------------------------------------------------
+        # 5. 100 DEMA STAGNATION / TIME-DECAY EXIT
+        # ----------------------------------------------------
+        if phase == "TARGET_1_LOCKED" and days_at_100 >= BotConfig.STAGNATION_DAYS:
+            # Stagnated near 100 DEMA for > 3 days without breaking out
+            return {
+                "action": "FULL_SELL",
+                "ratio": 1.0,
+                "reason": f"Stagnation Exit: Consolidating at 100 DEMA for {days_at_100} days without breakout. Freeing capital.",
+                "new_phase": "COMPLETED"
+            }
+
+        # Default: Continue holding
+        return {"action": "NONE", "ratio": 0.0, "reason": "Holding within active parameters"}
