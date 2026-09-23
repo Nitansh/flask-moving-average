@@ -3,8 +3,11 @@ Auto-Trader Background Runner & Scheduler
 Orchestrates market scans, position monitoring, order execution, and GUI state updates.
 """
 import time
+import os
+import json
+import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from .config import BotConfig
@@ -207,15 +210,122 @@ class BotRunner:
                                 update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
                                 log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
 
+    def fetch_live_scan_candidates(self):
+        """
+        Retrieves candidate stocks from moving-average's built-in live scan pipeline:
+        1. Node.js Live Scan Cache API (http://127.0.0.1:3000/api/full-list or /api/bullish-list)
+        2. SQLite DB cache in movingAverage/auth.db (scan_results table)
+        3. Fallback: Internal live technical scan of top liquid Nifty stocks
+        Returns: (candidates_list, source_description)
+        """
+        # 1. Try Node.js in-memory live scan API
+        for port in [3000, 8080]:
+            try:
+                import requests
+                resp = requests.get(f"http://127.0.0.1:{port}/api/full-list", timeout=1.5)
+                if resp.status_code == 200:
+                    stocks = resp.json()
+                    if isinstance(stocks, list) and len(stocks) > 0:
+                        return stocks, f"Node.js live scan cache (port {port}, {len(stocks)} stocks)"
+            except Exception:
+                pass
+
+        # 2. Try SQLite DB scan_results table in movingAverage/auth.db
+        possible_db_paths = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "movingAverage", "auth.db")),
+            os.path.abspath("c:/moving-average/movingAverage/auth.db"),
+            os.path.abspath(os.path.join(os.getcwd(), "movingAverage", "auth.db")),
+        ]
+        for db_path in possible_db_paths:
+            if os.path.exists(db_path):
+                try:
+                    conn = sqlite3.connect(db_path, timeout=2.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT data FROM scan_results")
+                    rows = cursor.fetchall()
+                    conn.close()
+                    if rows:
+                        stocks = []
+                        for r in rows:
+                            try:
+                                if r[0]:
+                                    stocks.append(json.loads(r[0]))
+                            except Exception:
+                                pass
+                        if stocks:
+                            return stocks, f"movingAverage SQLite DB (auth.db:scan_results, {len(stocks)} stocks)"
+                except Exception:
+                    pass
+
+        # 3. Fallback: Top liquid Nifty universe evaluated using historical cache / Yahoo Finance
+        try:
+            from app import custom_stock_df, MCAP
+            from finta import TA
+            import pandas as pd
+
+            sample_universe = [
+                "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "SBIN",
+                "LTIM", "TATAMOTORS", "LT", "ITC", "KOTAKBANK", "TITAN", "BAJFINANCE",
+                "MARUTI", "SUNPHARMA", "ASIANPAINT", "NTPC", "ONGC", "POWERGRID",
+                "TRENT", "BEL", "HAL", "COALINDIA", "BAJAJFINSV", "NESTLEIND", "ULTRACEMCO"
+            ]
+            today = datetime.now(IST).date()
+            from_date = today - timedelta(days=365)
+            to_date = today + timedelta(days=1)
+
+            scanned = []
+            for sym in sample_universe:
+                try:
+                    df = custom_stock_df(symbol=sym, from_date=from_date, to_date=to_date, series="EQ")
+                    if df is not None and not df.empty and len(df) >= 50:
+                        cur_p = float(df.iloc[-1]['CLOSE'])
+                        rsi_series = TA.RSI(df)
+                        rsi_val = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+                        d20 = float(TA.DEMA(df, 20).iloc[-1])
+                        d50 = float(TA.DEMA(df, 50).iloc[-1])
+                        d100 = float(TA.DEMA(df, 100).iloc[-1])
+                        d200 = float(TA.DEMA(df, 200).iloc[-1])
+
+                        scanned.append({
+                            "symbol": sym,
+                            "price": cur_p,
+                            "DMA_20": d20,
+                            "DMA_50": d50,
+                            "DMA_100": d100,
+                            "DMA_200": d200,
+                            "rsi": rsi_val,
+                            "mcap": MCAP.get(sym, 50000)
+                        })
+                except Exception:
+                    continue
+            if scanned:
+                return scanned, f"Internal Live Market Scanner ({len(scanned)} liquid Nifty stocks)"
+        except Exception:
+            pass
+
+        return [], "No live scan source available"
+
     def _scan_and_enter(self, candidate_stocks=None):
         """Scans candidate stocks meeting strategy criteria and places BUY order (Tranche vs One-Shot)."""
+        source_label = "GUI payload"
         stocks_to_scan = candidate_stocks or []
+
         if not stocks_to_scan:
+            stocks_to_scan, source_label = self.fetch_live_scan_candidates()
+
+        if not stocks_to_scan:
+            log_event("WARNING", "Live scan feed is currently empty. Start the moving-average scanner or provide candidate stocks.")
             return
+
+        log_event("INFO", f"Live scan feed: Evaluating {len(stocks_to_scan)} candidate stocks from {source_label}.")
+
+        trades_opened = 0
+        rejection_samples = []
 
         for stock in stocks_to_scan:
             strategy_type, strat_reason = RiskManager.determine_next_strategy()
             if not strategy_type:
+                log_event("INFO", f"Strategy capacity reached: {strat_reason}")
                 break
 
             symbol = stock.get("symbol")
@@ -269,6 +379,14 @@ class BotRunner:
                     
                     strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
                     log_event("SUCCESS", f"Opened new [{strat_label}] in {symbol}: {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
+                    trades_opened += 1
+            else:
+                if len(rejection_samples) < 3:
+                    rejection_samples.append(f"{symbol}: {reason}")
+
+        if trades_opened == 0:
+            sample_txt = " | ".join(rejection_samples) if rejection_samples else "all evaluated"
+            log_event("INFO", f"Scan cycle finished: Evaluated {len(stocks_to_scan)} stocks. 0 met entry criteria. Examples: {sample_txt}")
 
     def compute_performance_matrix(self):
         """

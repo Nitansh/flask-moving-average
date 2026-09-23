@@ -280,3 +280,31 @@ def test_performance_matrix_computation():
     assert matrix["leader"] == "TRANCHE_AVERAGING"
     assert matrix["deltaPnl"] == 2000.0
 
+def test_live_scan_candidates_pulling(monkeypatch):
+    """BotRunner should automatically pull candidates from live scan sources when candidate_stocks is empty."""
+    from auto_trader.bot_runner import bot_runner
+    
+    mock_scanned_stocks = [
+        {
+            "symbol": "TRENT",
+            "price": 5000.0,
+            "DMA_20": 4850.0,
+            "DMA_50": 4600.0,
+            "DMA_100": 5350.0,
+            "DMA_200": 4300.0,
+            "rsi": 55.0
+        }
+    ]
+    
+    monkeypatch.setattr(bot_runner, "fetch_live_scan_candidates", lambda: (mock_scanned_stocks, "Mock Live Scan Feed"))
+    
+    # Run cycle with None / empty candidate_stocks
+    bot_runner.evaluate_cycle(candidate_stocks=None)
+    
+    from auto_trader.db import get_open_positions
+    positions = get_open_positions()
+    assert len(positions) == 1
+    assert positions[0]["symbol"] == "TRENT"
+    assert positions[0]["strategy_type"] in ["TRANCHE_AVERAGING", "ONE_SHOT"]
+
+

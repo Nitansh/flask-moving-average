@@ -10,42 +10,55 @@ from .config import BotConfig
 
 class StrategyEngine:
     @staticmethod
+    def _extract_stock_values(stock_data):
+        def _get_val(*keys):
+            for k in keys:
+                v = stock_data.get(k)
+                if v is not None and v != "" and v != 0:
+                    try:
+                        return float(v)
+                    except (ValueError, TypeError):
+                        pass
+            return 0.0
+
+        price = _get_val("price", "currentPrice", "close", "ltp", "lastPrice")
+        dema_20 = _get_val("DMA_20", "dema_20", "dma20", "DMA20", "20_DEMA")
+        dema_50 = _get_val("DMA_50", "dema_50", "dma50", "DMA50", "50_DEMA")
+        dema_100 = _get_val("DMA_100", "dema_100", "dma100", "DMA100", "100_DEMA")
+        dema_200 = _get_val("DMA_200", "dema_200", "dma200", "DMA200", "200_DEMA")
+        rsi = _get_val("rsi", "RSI", "rsi14", "RSI_14")
+        return price, dema_20, dema_50, dema_100, dema_200, rsi
+
+    @staticmethod
     def evaluate_entry(stock_data):
         """
         Evaluates whether a stock meets all BUY entry criteria:
         1. Price > 20 DEMA > 50 DEMA
-        2. RSI between 48 and 62
-        3. Upside room to 100 DEMA is at least +4.0%
+        2. RSI between 45 and 68 (momentum expansion zone)
+        3. Upside room to 100 DEMA (or 200 DEMA if above 100) is at least +3.0%
         """
-        price = stock_data.get("price") or stock_data.get("currentPrice") or 0.0
-        dema_20 = stock_data.get("DMA_20") or stock_data.get("dema_20") or 0.0
-        dema_50 = stock_data.get("DMA_50") or stock_data.get("dema_50") or 0.0
-        dema_100 = stock_data.get("DMA_100") or stock_data.get("dema_100") or 0.0
-        rsi = stock_data.get("rsi") or stock_data.get("RSI") or 0.0
+        price, dema_20, dema_50, dema_100, dema_200, rsi = StrategyEngine._extract_stock_values(stock_data)
 
-        if not (price and dema_20 and dema_50 and dema_100):
-            return False, "Missing required DEMA values"
+        if not (price and dema_20 and dema_50):
+            return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
 
-        # 1. Trend Alignment
+        # 1. Trend Alignment: Price > 20 DEMA > 50 DEMA
         if not (price > dema_20 > dema_50):
-            return False, "Not in Price > 20 DEMA > 50 DEMA structure"
+            return False, f"Not in Price > 20 DEMA > 50 DEMA structure (Price: ₹{price:.1f}, 20D: ₹{dema_20:.1f}, 50D: ₹{dema_50:.1f})"
 
-        # 2. RSI Momentum Filter
-        if not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
-            return False, f"RSI {rsi:.1f} outside optimal range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
+        # 2. RSI Momentum Filter (45 to 68)
+        if rsi and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
+            return False, f"RSI {rsi:.1f} outside optimal momentum range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
 
-        # 3. Minimum Headroom to 100 DEMA (Risk-to-Reward)
-        if dema_100 > price:
+        # 3. Minimum Headroom to Resistance (Risk-to-Reward)
+        if dema_100 and dema_100 > price:
             headroom_pct = ((dema_100 - price) / price) * 100.0
             if headroom_pct < BotConfig.MIN_HEADROOM_TO_100_DEMA:
                 return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
-        else:
-            # If price is already above 100 DEMA, verify distance to 200 DEMA if available
-            dema_200 = stock_data.get("DMA_200") or stock_data.get("dema_200")
-            if dema_200 and dema_200 > price:
-                headroom_200 = ((dema_200 - price) / price) * 100.0
-                if headroom_200 < BotConfig.MIN_HEADROOM_TO_100_DEMA:
-                    return False, f"Insufficient headroom to 200 DEMA (+{headroom_200:.1f}%)"
+        elif dema_200 and dema_200 > price:
+            headroom_200 = ((dema_200 - price) / price) * 100.0
+            if headroom_200 < BotConfig.MIN_HEADROOM_TO_100_DEMA:
+                return False, f"Insufficient headroom to 200 DEMA (+{headroom_200:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
 
         return True, "Strong momentum setup with favorable risk-to-reward"
 
