@@ -11,6 +11,12 @@ from auto_trader.db import init_db, get_bot_state, update_bot_state
 @pytest.fixture(autouse=True)
 def setup_db():
     init_db()
+    from auto_trader.db import get_connection
+    conn = get_connection()
+    with conn:
+        conn.execute("DELETE FROM bot_positions")
+        conn.execute("DELETE FROM bot_trades")
+        conn.execute("DELETE FROM bot_logs")
     update_bot_state(
         total_capital=2000000.0,
         available_cash=2000000.0,
