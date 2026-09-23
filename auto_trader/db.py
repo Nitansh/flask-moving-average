@@ -23,21 +23,31 @@ def init_db():
                 id INTEGER PRIMARY KEY,
                 is_running INTEGER DEFAULT 0,
                 mode TEXT DEFAULT 'PAPER',
-                total_capital REAL DEFAULT 10000.0,
-                available_cash REAL DEFAULT 10000.0,
-                max_positions INTEGER DEFAULT 2,
+                total_capital REAL DEFAULT 2000000.0,
+                available_cash REAL DEFAULT 2000000.0,
+                bucket_capital REAL DEFAULT 250000.0,
+                tranche_size REAL DEFAULT 50000.0,
+                max_positions INTEGER DEFAULT 8,
                 partial_profit_pct REAL DEFAULT 30.0,
                 stagnation_days INTEGER DEFAULT 3,
                 updated_at TEXT
             )
         """)
 
+        # Add bucket_capital / tranche_size columns if missing in existing table
+        try:
+            conn.execute("ALTER TABLE bot_state ADD COLUMN bucket_capital REAL DEFAULT 250000.0")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_state ADD COLUMN tranche_size REAL DEFAULT 50000.0")
+        except Exception: pass
+
         # Seed initial row if empty
         row = conn.execute("SELECT id FROM bot_state WHERE id = 1").fetchone()
         if not row:
             conn.execute("""
-                INSERT INTO bot_state (id, is_running, mode, total_capital, available_cash, max_positions, partial_profit_pct, stagnation_days, updated_at)
-                VALUES (1, 0, 'PAPER', 10000.0, 10000.0, 2, 30.0, 3, ?)
+                INSERT INTO bot_state (id, is_running, mode, total_capital, available_cash, bucket_capital, tranche_size, max_positions, partial_profit_pct, stagnation_days, updated_at)
+                VALUES (1, 0, 'PAPER', 2000000.0, 2000000.0, 250000.0, 50000.0, 8, 30.0, 3, ?)
             """, (datetime.now(timezone.utc).isoformat(),))
 
         # 2. Open Positions
@@ -55,12 +65,22 @@ def init_db():
                 dema_20 REAL,
                 dema_50 REAL,
                 phase TEXT DEFAULT 'ENTRY', -- ENTRY, TARGET_1_LOCKED, RUNNER_ACTIVE
+                tranches_count INTEGER DEFAULT 1,
+                invested_amount REAL DEFAULT 0.0,
                 days_at_100_dema INTEGER DEFAULT 0,
                 last_dema_100_check_date TEXT,
                 entry_date TEXT,
                 updated_at TEXT
             )
         """)
+
+        # Add tranches_count and invested_amount if missing in existing table
+        try:
+            conn.execute("ALTER TABLE bot_positions ADD COLUMN tranches_count INTEGER DEFAULT 1")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_positions ADD COLUMN invested_amount REAL DEFAULT 0.0")
+        except Exception: pass
 
         # 3. Completed Trades
         conn.execute("""
@@ -137,12 +157,13 @@ def save_open_position(pos):
     with conn:
         conn.execute("""
             INSERT OR REPLACE INTO bot_positions 
-            (symbol, initial_qty, current_qty, buy_price, current_price, stop_loss, dema_100, dema_200, dema_20, dema_50, phase, days_at_100_dema, last_dema_100_check_date, entry_date, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (symbol, initial_qty, current_qty, buy_price, current_price, stop_loss, dema_100, dema_200, dema_20, dema_50, phase, tranches_count, invested_amount, days_at_100_dema, last_dema_100_check_date, entry_date, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             pos["symbol"], pos["initial_qty"], pos["current_qty"], pos["buy_price"], pos["current_price"],
             pos["stop_loss"], pos.get("dema_100"), pos.get("dema_200"), pos.get("dema_20"), pos.get("dema_50"),
-            pos.get("phase", "ENTRY"), pos.get("days_at_100_dema", 0), pos.get("last_dema_100_check_date"),
+            pos.get("phase", "ENTRY"), pos.get("tranches_count", 1), pos.get("invested_amount", 0.0),
+            pos.get("days_at_100_dema", 0), pos.get("last_dema_100_check_date"),
             pos.get("entry_date", datetime.now().strftime("%Y-%m-%d")), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
 

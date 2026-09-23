@@ -50,6 +50,51 @@ class StrategyEngine:
         return True, "Strong momentum setup with favorable risk-to-reward"
 
     @staticmethod
+    def evaluate_scale_in(position, current_price, current_dema, rsi=None):
+        """
+        Evaluates whether an active position qualifies for an additional ₹50,000 averaging tranche.
+        Criteria:
+        1. Position has not reached max tranches (5 tranches = ₹2.5L).
+        2. Scenario A (Bounce on 20 DEMA Support): Price pulled back to within 0.0% - 1.5% of 20 DEMA while > 50 DEMA.
+        3. Scenario B (Momentum Pyramiding): Price is >= +2.0% above current buy_price with upside headroom to 100 DEMA.
+        4. Scenario C (100 DEMA Breakout): Price is breaking cleanly above 100 DEMA (> 101%) targeting 200 DEMA.
+        """
+        tranches_count = int(position.get("tranches_count", 1))
+        if tranches_count >= BotConfig.MAX_TRANCHES_PER_STOCK:
+            return False, "Maximum 5 tranches (₹2.5L) already deployed"
+
+        dema_20 = current_dema.get("dema_20") or position.get("dema_20")
+        dema_50 = current_dema.get("dema_50") or position.get("dema_50")
+        dema_100 = current_dema.get("dema_100") or position.get("dema_100")
+        dema_200 = current_dema.get("dema_200") or position.get("dema_200")
+        buy_price = position["buy_price"]
+
+        if not (dema_20 and dema_50):
+            return False, "Missing DEMA indicators"
+
+        # Never average down if price broke below 50 DEMA
+        if current_price < dema_50:
+            return False, "Price below 50 DEMA; cannot average into a breakdown"
+
+        # Scenario A: Healthy pullback to rising 20 DEMA support
+        dist_to_20_dema_pct = ((current_price - dema_20) / dema_20) * 100.0
+        if 0.0 <= dist_to_20_dema_pct <= 1.5 and dema_20 > dema_50:
+            return True, f"Dip-Buy Tranche #{tranches_count + 1}: Testing rising 20 DEMA support (+{dist_to_20_dema_pct:.1f}%)"
+
+        # Scenario B: Pyramiding on strength (+2% from average buy price)
+        pnl_pct = ((current_price - buy_price) / buy_price) * 100.0
+        if pnl_pct >= 2.0:
+            if dema_100 and current_price < (dema_100 * 0.985):
+                return True, f"Pyramid Tranche #{tranches_count + 1}: Momentum continuation (+{pnl_pct:.1f}% gain with room to 100 DEMA)"
+
+        # Scenario C: 100 DEMA Breakout confirmation
+        if dema_100 and current_price >= (dema_100 * 1.01):
+            if dema_200 and ((dema_200 - current_price) / current_price) >= 0.03:
+                return True, f"Breakout Tranche #{tranches_count + 1}: Clean 100 DEMA bisect targeting 200 DEMA"
+
+        return False, "No tranche averaging condition met"
+
+    @staticmethod
     def evaluate_exit(position, current_price, current_dema):
         """
         Evaluates an active position against targets, resistances, trailing stops, and stop-loss.

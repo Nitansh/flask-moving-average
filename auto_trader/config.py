@@ -17,9 +17,12 @@ class BotConfig:
     MODE = os.environ.get("AUTOTRADER_MODE", "PAPER").upper()
 
     # --- Capital & Risk Management Defaults ---
-    INITIAL_CAPITAL = float(os.environ.get("AUTOTRADER_CAPITAL", 10000.0)) # ₹10,000 pool
-    MAX_ACTIVE_POSITIONS = int(os.environ.get("AUTOTRADER_MAX_POSITIONS", 2)) # 2 positions (₹5,000 each)
-    MAX_DAILY_LOSS_PCT = 5.0 # Stop trading if daily portfolio drawdown reaches -5% (-₹500)
+    INITIAL_CAPITAL = float(os.environ.get("AUTOTRADER_CAPITAL", 2000000.0)) # ₹20,00,000 (20 Lac pool)
+    BUCKET_CAPITAL_PER_STOCK = float(os.environ.get("AUTOTRADER_BUCKET_CAPITAL", 250000.0)) # ₹2,50,000 (2.5 Lac max per stock)
+    TRANCHE_SIZE = float(os.environ.get("AUTOTRADER_TRANCHE_SIZE", 50000.0)) # ₹50,000 per shot (averaging / scaling in)
+    MAX_TRANCHES_PER_STOCK = int(os.environ.get("AUTOTRADER_MAX_TRANCHES", 5)) # Up to 5 tranches (5 x 50k = 2.5L)
+    MAX_ACTIVE_POSITIONS = int(os.environ.get("AUTOTRADER_MAX_POSITIONS", 8)) # Up to 8 stocks (20L / 2.5L)
+    MAX_DAILY_LOSS_PCT = 5.0 # Stop trading if daily portfolio drawdown reaches -5% (-₹1,00,000)
     HARD_STOP_LOSS_PCT = 3.5 # Hard stop loss per trade (-3.5%)
 
     # --- Strategy Parameters (DEMA Stage-Rider) ---

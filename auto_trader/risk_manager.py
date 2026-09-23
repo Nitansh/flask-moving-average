@@ -10,14 +10,16 @@ class RiskManager:
         pass
 
     @staticmethod
-    def get_allocation_per_slot():
-        """Calculates maximum capital allocated per stock position."""
+    def get_bucket_size():
+        """Calculates maximum capital allocated per stock bucket (e.g. ₹2,50,000)."""
         state = get_bot_state()
-        total_capital = float(state.get("total_capital", BotConfig.INITIAL_CAPITAL))
-        max_positions = int(state.get("max_positions", BotConfig.MAX_ACTIVE_POSITIONS))
-        if max_positions <= 0:
-            max_positions = 2
-        return total_capital / max_positions
+        return float(state.get("bucket_capital", BotConfig.BUCKET_CAPITAL_PER_STOCK))
+
+    @staticmethod
+    def get_tranche_size():
+        """Calculates budget per shot/tranche (e.g. ₹50,000)."""
+        state = get_bot_state()
+        return float(state.get("tranche_size", BotConfig.TRANCHE_SIZE))
 
     @staticmethod
     def can_open_new_position():
@@ -28,26 +30,53 @@ class RiskManager:
         open_positions = get_open_positions()
 
         if len(open_positions) >= max_positions:
-            return False, f"Maximum positions reached ({len(open_positions)}/{max_positions})"
+            return False, f"Maximum stock buckets reached ({len(open_positions)}/{max_positions})"
 
-        slot_size = RiskManager.get_allocation_per_slot()
-        if available_cash < (slot_size * 0.75):
-            return False, f"Insufficient cash (Available: ₹{available_cash:.2f}, Required: ~₹{slot_size:.2f})"
+        tranche_size = RiskManager.get_tranche_size()
+        if available_cash < (tranche_size * 0.5):
+            return False, f"Insufficient cash for initial tranche (Available: ₹{available_cash:.2f}, Required: ~₹{tranche_size:.2f})"
 
         return True, "OK"
 
     @staticmethod
-    def calculate_position_size(price):
-        """Calculates quantity of shares to purchase based on slot size."""
+    def can_add_tranche(position):
+        """Checks if an existing stock position can accept another ₹50,000 tranche."""
+        state = get_bot_state()
+        available_cash = float(state.get("available_cash", 0.0))
+        tranche_size = RiskManager.get_tranche_size()
+        bucket_size = RiskManager.get_bucket_size()
+
+        tranches_count = int(position.get("tranches_count", 1))
+        invested_amount = float(position.get("invested_amount", 0.0))
+
+        if tranches_count >= BotConfig.MAX_TRANCHES_PER_STOCK:
+            return False, f"Max tranches reached ({tranches_count}/{BotConfig.MAX_TRANCHES_PER_STOCK})"
+
+        if (invested_amount + (tranche_size * 0.75)) > bucket_size:
+            return False, f"Bucket limit reached (Invested: ₹{invested_amount:.2f}, Cap: ₹{bucket_size:.2f})"
+
+        if available_cash < (tranche_size * 0.5):
+            return False, f"Insufficient cash for next tranche (Available: ₹{available_cash:.2f})"
+
+        return True, "OK"
+
+    @staticmethod
+    def calculate_tranche_qty(price):
+        """Calculates quantity of shares to purchase for a ₹50,000 tranche."""
         if price <= 0:
             return 0
-        slot_size = RiskManager.get_allocation_per_slot()
+        tranche_size = RiskManager.get_tranche_size()
         state = get_bot_state()
         available_cash = float(state.get("available_cash", 0.0))
 
-        effective_budget = min(slot_size, available_cash)
+        effective_budget = min(tranche_size, available_cash)
         qty = int(effective_budget // price)
         return qty
+
+    @staticmethod
+    def calculate_position_size(price):
+        """Initial position size equals one tranche (₹50,000)."""
+        return RiskManager.calculate_tranche_qty(price)
 
     @staticmethod
     def check_daily_drawdown():

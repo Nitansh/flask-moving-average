@@ -169,8 +169,44 @@ class BotRunner:
                 save_open_position(pos)
                 log_event("INFO", f"{symbol}: {eval_res.get('reason')}")
 
+            # -----------------------------------------------------------------
+            # Tranche Averaging & Scaling In (Add ₹50k shots up to ₹2.5L bucket)
+            # -----------------------------------------------------------------
+            if action == "NONE" and pos.get("phase") in ["ENTRY", "TARGET_1_LOCKED"]:
+                can_scale, _ = RiskManager.can_add_tranche(pos)
+                if can_scale:
+                    should_scale, scale_reason = StrategyEngine.evaluate_scale_in(pos, live_price, dema_data)
+                    if should_scale:
+                        add_qty = RiskManager.calculate_tranche_qty(live_price)
+                        if add_qty > 0:
+                            order_res = self.client.place_buy_order(symbol, add_qty, live_price)
+                            if order_res.get("status") == "SUCCESS":
+                                exec_price = float(order_res.get("executed_price", live_price))
+                                old_qty = pos["current_qty"]
+                                old_invested = pos.get("invested_amount") or (old_qty * pos["buy_price"])
+                                add_cost = add_qty * exec_price
+
+                                new_total_qty = old_qty + add_qty
+                                new_invested = old_invested + add_cost
+                                new_avg_price = new_invested / new_total_qty
+                                new_tranches = int(pos.get("tranches_count", 1)) + 1
+
+                                pos["current_qty"] = new_total_qty
+                                pos["initial_qty"] = int(pos.get("initial_qty", old_qty)) + add_qty
+                                pos["buy_price"] = round(new_avg_price, 2)
+                                pos["invested_amount"] = round(new_invested, 2)
+                                pos["tranches_count"] = new_tranches
+                                pos["stop_loss"] = round(new_avg_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
+
+                                save_open_position(pos)
+                                record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}")
+
+                                state = get_bot_state()
+                                update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
+                                log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
+
     def _scan_and_enter(self, candidate_stocks=None):
-        """Scans candidate stocks meeting strategy criteria and places BUY order."""
+        """Scans candidate stocks meeting strategy criteria and places initial ₹50,000 BUY order."""
         stocks_to_scan = candidate_stocks or []
         if not stocks_to_scan:
             return
@@ -200,6 +236,7 @@ class BotRunner:
                 if order_res.get("status") == "SUCCESS":
                     exec_price = float(order_res.get("executed_price", price))
                     stop_loss = round(exec_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
+                    invested = round(qty * exec_price, 2)
 
                     pos = {
                         "symbol": symbol,
@@ -213,16 +250,18 @@ class BotRunner:
                         "dema_20": stock.get("DMA_20") or stock.get("dema_20"),
                         "dema_50": stock.get("DMA_50") or stock.get("dema_50"),
                         "phase": "ENTRY",
+                        "tranches_count": 1,
+                        "invested_amount": invested,
                         "days_at_100_dema": 0,
                         "entry_date": datetime.now(IST).strftime("%Y-%m-%d")
                     }
                     save_open_position(pos)
-                    record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, reason)
+                    record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #1 (Initial): {reason}")
 
                     state = get_bot_state()
-                    new_cash = max(0.0, state.get("available_cash", 10000.0) - (qty * exec_price))
+                    new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)
                     update_bot_state(available_cash=new_cash)
-                    log_event("SUCCESS", f"Opened new trade in {symbol}: {qty} shares @ ₹{exec_price:.2f}. SL set at ₹{stop_loss:.2f}")
+                    log_event("SUCCESS", f"Opened new bucket in {symbol} [Tranche 1/5]: {qty} shares @ ₹{exec_price:.2f} (₹{invested:.2f}/₹{RiskManager.get_bucket_size():.0f}). SL set at ₹{stop_loss:.2f}")
 
     def get_status(self):
         """Returns full snapshot of Auto-Trader state for the frontend GUI."""
@@ -234,18 +273,21 @@ class BotRunner:
         # Calculate metrics
         total_invested = sum(p["current_price"] * p["current_qty"] for p in positions)
         unrealized_pnl = sum((p["current_price"] - p["buy_price"]) * p["current_qty"] for p in positions)
-        realized_pnl = sum(t["realized_pnl"] for t in trades if t["trade_type"] != "BUY")
+        realized_pnl = sum(t["realized_pnl"] for t in trades if "SELL" in t.get("trade_type", ""))
 
         return {
             "isRunning": bool(state.get("is_running", 0)),
             "mode": state.get("mode", "PAPER"),
             "hasLiveCredentials": BotConfig.has_live_credentials(),
-            "totalCapital": float(state.get("total_capital", 10000.0)),
-            "availableCash": float(state.get("available_cash", 10000.0)),
+            "totalCapital": float(state.get("total_capital", BotConfig.INITIAL_CAPITAL)),
+            "availableCash": float(state.get("available_cash", BotConfig.INITIAL_CAPITAL)),
+            "bucketCapital": float(state.get("bucket_capital", BotConfig.BUCKET_CAPITAL_PER_STOCK)),
+            "trancheSize": float(state.get("tranche_size", BotConfig.TRANCHE_SIZE)),
+            "maxTranches": BotConfig.MAX_TRANCHES_PER_STOCK,
             "investedCapital": round(total_invested, 2),
             "unrealizedPnl": round(unrealized_pnl, 2),
             "realizedPnl": round(realized_pnl, 2),
-            "maxPositions": int(state.get("max_positions", 2)),
+            "maxPositions": int(state.get("max_positions", BotConfig.MAX_ACTIVE_POSITIONS)),
             "partialProfitPct": float(state.get("partial_profit_pct", 30.0)),
             "stagnationDays": int(state.get("stagnation_days", 3)),
             "lastScanTime": self.last_scan_time,
