@@ -42,30 +42,30 @@ class StrategyEngine:
         if not (price and dema_20 and dema_50):
             return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
 
-        # 1. Trend Alignment:
-        # Valid if:
-        # A) Live scanner explicit confirmation: isBullish or isGoldenCrossApproaching
-        # B) OR Price > 20 DEMA and Price > 50 DEMA (or Price > 20 DEMA > 50 DEMA)
+        # 1. Scanner-Confirmed In-Range Setups (isBullish / isGoldenCrossApproaching)
         is_bullish_flag = stock_data.get("isBullish") in [True, "true"]
         is_gc_flag = stock_data.get("isGoldenCrossApproaching") in [True, "true"]
 
-        trend_aligned = is_bullish_flag or is_gc_flag or (price > dema_20 and price > dema_50) or (price > dema_20 > dema_50)
+        if is_bullish_flag or is_gc_flag:
+            if rsi and rsi > 75.0:
+                return False, f"RSI {rsi:.1f} indicates extreme overbought exhaustion (> 75)"
+            label = "Bullish In-Range" if is_bullish_flag else "Golden Cross Approaching"
+            return True, f"Moving-Average Live Scanner Confirmed: {label}"
+
+        # 2. General Technical Entry Filter (for stocks not explicitly flagged by scanner)
+        trend_aligned = (price > dema_20 and price > dema_50) or (price > dema_20 > dema_50)
         if not trend_aligned:
             return False, f"Not in bullish alignment (Price: ₹{price:.1f}, 20D: ₹{dema_20:.1f}, 50D: ₹{dema_50:.1f})"
 
-        # 2. RSI Momentum Filter (45 to 68)
+        # RSI Momentum Filter (40 to 70)
         if rsi and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
             return False, f"RSI {rsi:.1f} outside optimal momentum range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
 
-        # 3. Minimum Headroom to Resistance (Risk-to-Reward)
+        # Minimum Headroom to Resistance (Risk-to-Reward)
         if dema_100 and dema_100 > price:
             headroom_pct = ((dema_100 - price) / price) * 100.0
             if headroom_pct < BotConfig.MIN_HEADROOM_TO_100_DEMA:
                 return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
-        elif dema_200 and dema_200 > price:
-            headroom_200 = ((dema_200 - price) / price) * 100.0
-            if headroom_200 < BotConfig.MIN_HEADROOM_TO_100_DEMA:
-                return False, f"Insufficient headroom to 200 DEMA (+{headroom_200:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
 
         return True, "Strong momentum setup with favorable risk-to-reward"
 
