@@ -31,9 +31,9 @@ class BotConfig:
     MAX_ONE_SHOT_POSITIONS = 4 # 4 slots for ₹2.5L One-Shot Lump Sum
 
     # --- Strategy Parameters (DEMA Stage-Rider) ---
-    MIN_HEADROOM_TO_100_DEMA = 3.0 # Minimum +3.0% distance from price to 100 DEMA to enter
-    RSI_MIN = 45.0 # Minimum RSI (14) for entry
-    RSI_MAX = 68.0 # Maximum RSI (14) for entry (healthy momentum zone)
+    MIN_HEADROOM_TO_100_DEMA = 2.5 # Minimum +2.5% distance from price to 100 DEMA to enter
+    RSI_MIN = 40.0 # Minimum RSI (14) for entry
+    RSI_MAX = 70.0 # Maximum RSI (14) for entry (healthy momentum zone)
 
     # 100 DEMA Resistance & Partial Booking
     DEMA_100_RESISTANCE_PCT = 99.9 # % of 100 DEMA to trigger Target 1

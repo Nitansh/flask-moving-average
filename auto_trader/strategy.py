@@ -42,9 +42,16 @@ class StrategyEngine:
         if not (price and dema_20 and dema_50):
             return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
 
-        # 1. Trend Alignment: Price > 20 DEMA > 50 DEMA
-        if not (price > dema_20 > dema_50):
-            return False, f"Not in Price > 20 DEMA > 50 DEMA structure (Price: ₹{price:.1f}, 20D: ₹{dema_20:.1f}, 50D: ₹{dema_50:.1f})"
+        # 1. Trend Alignment:
+        # Valid if:
+        # A) Live scanner explicit confirmation: isBullish or isGoldenCrossApproaching
+        # B) OR Price > 20 DEMA and Price > 50 DEMA (or Price > 20 DEMA > 50 DEMA)
+        is_bullish_flag = stock_data.get("isBullish") in [True, "true"]
+        is_gc_flag = stock_data.get("isGoldenCrossApproaching") in [True, "true"]
+
+        trend_aligned = is_bullish_flag or is_gc_flag or (price > dema_20 and price > dema_50) or (price > dema_20 > dema_50)
+        if not trend_aligned:
+            return False, f"Not in bullish alignment (Price: ₹{price:.1f}, 20D: ₹{dema_20:.1f}, 50D: ₹{dema_50:.1f})"
 
         # 2. RSI Momentum Filter (45 to 68)
         if rsi and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
