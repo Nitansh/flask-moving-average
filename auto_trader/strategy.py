@@ -30,17 +30,39 @@ class StrategyEngine:
         return price, dema_20, dema_50, dema_100, dema_200, rsi
 
     @staticmethod
+    def get_min_headroom():
+        """Returns the configured minimum % distance from entry price to 100 DEMA."""
+        try:
+            from .db import get_bot_state
+            state = get_bot_state()
+            if state and "min_headroom_to_100_dema" in state and state["min_headroom_to_100_dema"] is not None:
+                return float(state["min_headroom_to_100_dema"])
+        except Exception:
+            pass
+        return BotConfig.MIN_HEADROOM_TO_100_DEMA
+
+    @staticmethod
     def evaluate_entry(stock_data):
         """
         Evaluates whether a stock meets all BUY entry criteria:
-        1. Price > 20 DEMA > 50 DEMA
-        2. RSI between 45 and 68 (momentum expansion zone)
-        3. Upside room to 100 DEMA (or 200 DEMA if above 100) is at least +3.0%
+        1. Price > 20 DEMA > 50 DEMA (or scanner isBullish/isGoldenCrossApproaching)
+        2. RSI in momentum expansion zone (40-70, and not > 75)
+        3. Upside room to 100 DEMA is at least min_headroom (default >= 4.0%)
         """
         price, dema_20, dema_50, dema_100, dema_200, rsi = StrategyEngine._extract_stock_values(stock_data)
 
         if not (price and dema_20 and dema_50):
             return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
+
+        min_headroom = StrategyEngine.get_min_headroom()
+
+        # Enforce Minimum Headroom to 100 DEMA Resistance
+        # Crucial: If entry price is within < 4.0% of 100 DEMA, profit-booking at 100 DEMA
+        # would trigger almost immediately without delivering meaningful profit.
+        if dema_100 and dema_100 > price:
+            headroom_pct = ((dema_100 - price) / price) * 100.0
+            if headroom_pct < min_headroom:
+                return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < minimum +{min_headroom:.1f}%). Requires at least {min_headroom:.1f}% room for profitable target booking."
 
         # 1. Scanner-Confirmed In-Range Setups (isBullish / isGoldenCrossApproaching)
         is_bullish_flag = stock_data.get("isBullish") in [True, "true"]
@@ -50,7 +72,8 @@ class StrategyEngine:
             if rsi and rsi > 75.0:
                 return False, f"RSI {rsi:.1f} indicates extreme overbought exhaustion (> 75)"
             label = "Bullish In-Range" if is_bullish_flag else "Golden Cross Approaching"
-            return True, f"Moving-Average Live Scanner Confirmed: {label}"
+            headroom_str = f" (+{((dema_100 - price)/price)*100.0:.1f}% room to 100 DEMA)" if (dema_100 and dema_100 > price) else ""
+            return True, f"Moving-Average Live Scanner Confirmed: {label}{headroom_str}"
 
         # 2. General Technical Entry Filter (for stocks not explicitly flagged by scanner)
         trend_aligned = (price > dema_20 and price > dema_50) or (price > dema_20 > dema_50)
@@ -60,12 +83,6 @@ class StrategyEngine:
         # RSI Momentum Filter (40 to 70)
         if rsi and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
             return False, f"RSI {rsi:.1f} outside optimal momentum range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
-
-        # Minimum Headroom to Resistance (Risk-to-Reward)
-        if dema_100 and dema_100 > price:
-            headroom_pct = ((dema_100 - price) / price) * 100.0
-            if headroom_pct < BotConfig.MIN_HEADROOM_TO_100_DEMA:
-                return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < +{BotConfig.MIN_HEADROOM_TO_100_DEMA}%)"
 
         return True, "Strong momentum setup with favorable risk-to-reward"
 
@@ -195,23 +212,31 @@ class StrategyEngine:
         # 4. 100 DEMA RESISTANCE & PARTIAL PROFIT LOCKING
         # ----------------------------------------------------
         if dema_100 and phase == "ENTRY":
-            resistance_price = dema_100 * (BotConfig.DEMA_100_RESISTANCE_PCT / 100.0)
-            breakout_price = dema_100 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)
+            # Only trigger 100 DEMA target booking if position was entered below 100 DEMA
+            # (If entered above 100 DEMA, stock is riding towards 200 DEMA, not hitting 100 DEMA resistance)
+            if buy_price < dema_100:
+                resistance_price = dema_100 * (BotConfig.DEMA_100_RESISTANCE_PCT / 100.0)
+                breakout_price = dema_100 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)
 
-            # Check if stock has reached 100 DEMA Resistance (99.9%)
-            if current_price >= resistance_price and current_price < breakout_price:
-                # Sell 30% of the position to lock in profit
-                sell_qty = max(1, int(round(initial_qty * (BotConfig.PARTIAL_PROFIT_PCT / 100.0))))
-                # Move Stop Loss to Breakeven (+0.5% buffer for brokerage/DP charges)
-                breakeven_sl = buy_price * 1.005
+                # Check if stock has reached 100 DEMA Resistance (99.9%)
+                # AND ensure trade has achieved meaningful positive profit (>= 2.0% gain)
+                gain_pct = ((current_price - buy_price) / buy_price) * 100.0
+                min_headroom = StrategyEngine.get_min_headroom()
+                min_gain_for_booking = max(2.0, min_headroom * 0.6)
 
-                return {
-                    "action": "PARTIAL_SELL",
-                    "quantity": min(sell_qty, current_qty),
-                    "new_phase": "TARGET_1_LOCKED",
-                    "new_stop_loss": max(stop_loss, breakeven_sl),
-                    "reason": f"💰 Reached 100 DEMA Resistance (₹{dema_100:.2f}). Locked {BotConfig.PARTIAL_PROFIT_PCT}% profit & moved SL to breakeven (₹{breakeven_sl:.2f})"
-                }
+                if current_price >= resistance_price and current_price < breakout_price and gain_pct >= min_gain_for_booking:
+                    # Sell 30% of the position to lock in profit
+                    sell_qty = max(1, int(round(initial_qty * (BotConfig.PARTIAL_PROFIT_PCT / 100.0))))
+                    # Move Stop Loss to Breakeven (+0.5% buffer for brokerage/DP charges)
+                    breakeven_sl = buy_price * 1.005
+
+                    return {
+                        "action": "PARTIAL_SELL",
+                        "quantity": min(sell_qty, current_qty),
+                        "new_phase": "TARGET_1_LOCKED",
+                        "new_stop_loss": max(stop_loss, breakeven_sl),
+                        "reason": f"💰 Reached 100 DEMA Resistance (₹{dema_100:.2f}) with +{gain_pct:.1f}% gain. Locked {BotConfig.PARTIAL_PROFIT_PCT}% profit & moved SL to breakeven (₹{breakeven_sl:.2f})"
+                    }
 
         # ----------------------------------------------------
         # 5. 100 DEMA STAGNATION / TIME-DECAY EXIT

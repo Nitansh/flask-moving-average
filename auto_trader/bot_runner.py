@@ -411,6 +411,8 @@ class BotRunner:
             win_rate = round((win_count / total_trades_count * 100.0), 1) if total_trades_count > 0 else 0.0
 
             realized_pnl = sum((t.get("realized_pnl") or 0.0) for t in sell_trades)
+            gross_pnl = sum((t.get("gross_pnl") or t.get("realized_pnl") or 0.0) for t in sell_trades)
+            total_charges = sum((t.get("total_charges") or 0.0) for t in sell_trades)
             gross_profit = sum((t.get("realized_pnl") or 0.0) for t in winning_trades)
             gross_loss = abs(sum((t.get("realized_pnl") or 0.0) for t in losing_trades))
 
@@ -436,6 +438,8 @@ class BotRunner:
                 "winningTrades": win_count,
                 "losingTrades": loss_count,
                 "winRatePct": win_rate,
+                "grossPnl": round(gross_pnl, 2),
+                "totalCharges": round(total_charges, 2),
                 "realizedPnl": round(realized_pnl, 2),
                 "unrealizedPnl": round(unrealized_pnl, 2),
                 "netPnl": round(net_pnl, 2),
@@ -474,17 +478,46 @@ class BotRunner:
         }
 
     def get_status(self):
-        """Returns full snapshot of Auto-Trader state for the frontend GUI."""
+        """Returns full snapshot of Auto-Trader state for the frontend GUI with charges details."""
+        from .charges import calculate_charges
+
         state = get_bot_state()
         positions = get_open_positions()
-        trades = get_trades(limit=20)
+        trades = get_trades(limit=50)
         logs = get_recent_logs(limit=40)
         perf_matrix = self.compute_performance_matrix()
 
-        # Calculate metrics
-        total_invested = sum(p["current_price"] * p["current_qty"] for p in positions)
-        unrealized_pnl = sum((p["current_price"] - p["buy_price"]) * p["current_qty"] for p in positions)
-        realized_pnl = sum(t["realized_pnl"] for t in trades if "SELL" in t.get("trade_type", ""))
+        # Enrich active positions with live estimated charges and net floating PnL
+        enriched_positions = []
+        for p in positions:
+            p_dict = dict(p)
+            bp = float(p_dict.get("buy_price") or 0.0)
+            cp = float(p_dict.get("current_price") or bp)
+            qty = int(p_dict.get("current_qty") or 0)
+            
+            charges_data = calculate_charges(bp, cp, qty, is_delivery=True)
+            gross_float = round((cp - bp) * qty, 2)
+            net_float = round(gross_float - charges_data["total_charges"], 2)
+            net_float_pct = round((net_float / (bp * qty)) * 100.0, 2) if (bp * qty) > 0 else 0.0
+
+            p_dict["estimated_charges"] = charges_data["total_charges"]
+            p_dict["charges_breakdown"] = charges_data
+            p_dict["gross_pnl"] = gross_float
+            p_dict["net_pnl"] = net_float
+            p_dict["net_pnl_percent"] = net_float_pct
+            p_dict["breakeven_price"] = round(bp + charges_data["breakeven_diff"], 2)
+            enriched_positions.append(p_dict)
+
+        # Aggregate financial metrics
+        total_invested = sum(p["current_price"] * p["current_qty"] for p in enriched_positions)
+        gross_unrealized_pnl = sum(p["gross_pnl"] for p in enriched_positions)
+        est_open_charges = sum(p["estimated_charges"] for p in enriched_positions)
+        net_unrealized_pnl = sum(p["net_pnl"] for p in enriched_positions)
+
+        sell_trades = [t for t in trades if "SELL" in t.get("trade_type", "")]
+        gross_realized_pnl = sum((t.get("gross_pnl") or t.get("realized_pnl") or 0.0) for t in sell_trades)
+        total_charges_paid = sum((t.get("total_charges") or 0.0) for t in sell_trades)
+        net_realized_pnl = sum((t.get("net_pnl") or t.get("realized_pnl") or 0.0) for t in sell_trades)
 
         return {
             "isRunning": bool(state.get("is_running", 0)),
@@ -496,13 +529,19 @@ class BotRunner:
             "trancheSize": float(state.get("tranche_size", BotConfig.TRANCHE_SIZE)),
             "maxTranches": BotConfig.MAX_TRANCHES_PER_STOCK,
             "investedCapital": round(total_invested, 2),
-            "unrealizedPnl": round(unrealized_pnl, 2),
-            "realizedPnl": round(realized_pnl, 2),
+            "unrealizedPnl": round(net_unrealized_pnl, 2),
+            "grossUnrealizedPnl": round(gross_unrealized_pnl, 2),
+            "estimatedOpenCharges": round(est_open_charges, 2),
+            "realizedPnl": round(net_realized_pnl, 2),
+            "grossRealizedPnl": round(gross_realized_pnl, 2),
+            "totalChargesPaid": round(total_charges_paid, 2),
+            "netTotalPnl": round(net_realized_pnl + net_unrealized_pnl, 2),
             "maxPositions": int(state.get("max_positions", BotConfig.MAX_ACTIVE_POSITIONS)),
             "partialProfitPct": float(state.get("partial_profit_pct", 30.0)),
             "stagnationDays": int(state.get("stagnation_days", 3)),
+            "minHeadroomTo100Dema": float(state.get("min_headroom_to_100_dema", BotConfig.MIN_HEADROOM_TO_100_DEMA)),
             "lastScanTime": self.last_scan_time,
-            "positions": positions,
+            "positions": enriched_positions,
             "trades": trades,
             "logs": logs,
             "performanceMatrix": perf_matrix

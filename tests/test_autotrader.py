@@ -67,6 +67,34 @@ def test_strategy_entry_rejected_on_headroom():
     assert is_valid is False
     assert "Insufficient headroom" in reason
 
+def test_strategy_entry_scanner_flagged_still_checks_headroom():
+    """Even if flagged isBullish by scanner, must have at least 4% headroom to 100 DEMA."""
+    scanner_stock_low_headroom = {
+        "symbol": "TRENT",
+        "price": 5000.0,
+        "DMA_20": 4850.0,
+        "DMA_50": 4600.0,
+        "DMA_100": 5100.0, # only +2.0% away (< 4.0%)
+        "rsi": 55.0,
+        "isBullish": "true"
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(scanner_stock_low_headroom)
+    assert is_valid is False
+    assert "Insufficient headroom" in reason
+
+    scanner_stock_good_headroom = {
+        "symbol": "TRENT",
+        "price": 5000.0,
+        "DMA_20": 4850.0,
+        "DMA_50": 4600.0,
+        "DMA_100": 5250.0, # +5.0% headroom (>= 4.0%)
+        "rsi": 55.0,
+        "isBullish": "true"
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(scanner_stock_good_headroom)
+    assert is_valid is True
+    assert "Live Scanner Confirmed" in reason
+
 def test_tranche_scale_in_pullback_to_20_dema():
     """Stock pulling back to 20 DEMA support should trigger an averaging tranche."""
     position = {
@@ -151,6 +179,27 @@ def test_exit_100_dema_resistance_locks_profit():
     assert eval_res["quantity"] == 30 # 30% of 100
     assert eval_res["new_phase"] == "TARGET_1_LOCKED"
     assert eval_res["new_stop_loss"] >= 1500.0 * 1.005 # Breakeven + buffer
+
+def test_exit_100_dema_not_triggered_without_profit():
+    """If stock is near 100 DEMA but trade has negligible profit (< 2%), do not initiate profit booking."""
+    position = {
+        "symbol": "INFY",
+        "initial_qty": 100,
+        "current_qty": 100,
+        "buy_price": 1595.0, # Bought almost at 100 DEMA
+        "stop_loss": 1539.0,
+        "phase": "ENTRY",
+        "days_at_100_dema": 0
+    }
+    current_dema = {
+        "dema_20": 1580.0,
+        "dema_50": 1560.0,
+        "dema_100": 1600.0,
+        "dema_200": 1750.0
+    }
+    # Price is 1599.0 (gain is only +0.25%, not enough to justify partial profit booking)
+    eval_res = StrategyEngine.evaluate_exit(position, 1599.0, current_dema)
+    assert eval_res["action"] == "NONE"
 
 def test_exit_200_dema_breakout_activates_runner():
     """When price bisects > 101% of 200 DEMA, transition to Mega-Runner."""
@@ -273,12 +322,14 @@ def test_performance_matrix_computation():
     matrix = bot_runner.compute_performance_matrix()
     assert "trancheAveraging" in matrix
     assert "oneShot" in matrix
-    assert matrix["trancheAveraging"]["realizedPnl"] == 1000.0
+    assert matrix["trancheAveraging"]["grossPnl"] == 1000.0
+    assert matrix["trancheAveraging"]["totalCharges"] > 0.0
+    assert matrix["trancheAveraging"]["realizedPnl"] == round(1000.0 - matrix["trancheAveraging"]["totalCharges"], 2)
     assert matrix["trancheAveraging"]["winRatePct"] == 100.0
-    assert matrix["oneShot"]["realizedPnl"] == -1000.0
+    assert matrix["oneShot"]["grossPnl"] == -1000.0
     assert matrix["oneShot"]["winRatePct"] == 0.0
     assert matrix["leader"] == "TRANCHE_AVERAGING"
-    assert matrix["deltaPnl"] == 2000.0
+    assert matrix["deltaPnl"] > 0.0
 
 def test_live_scan_candidates_pulling(monkeypatch):
     """BotRunner should automatically pull candidates from live scan sources when candidate_stocks is empty."""

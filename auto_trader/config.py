@@ -31,7 +31,7 @@ class BotConfig:
     MAX_ONE_SHOT_POSITIONS = 4 # 4 slots for ₹2.5L One-Shot Lump Sum
 
     # --- Strategy Parameters (DEMA Stage-Rider) ---
-    MIN_HEADROOM_TO_100_DEMA = 2.5 # Minimum +2.5% distance from price to 100 DEMA to enter
+    MIN_HEADROOM_TO_100_DEMA = float(os.environ.get("AUTOTRADER_MIN_HEADROOM_100_DEMA", 4.0)) # Minimum +4.0% distance from entry price to 100 DEMA
     RSI_MIN = 40.0 # Minimum RSI (14) for entry
     RSI_MAX = 70.0 # Maximum RSI (14) for entry (healthy momentum zone)
 

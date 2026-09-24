@@ -952,9 +952,12 @@ try:
                 "mode": str,
                 "total_capital": float,
                 "available_cash": float,
+                "bucket_capital": float,
+                "tranche_size": float,
                 "max_positions": int,
                 "partial_profit_pct": float,
-                "stagnation_days": int
+                "stagnation_days": int,
+                "min_headroom_to_100_dema": float
             }
             updates = {}
             for k, typ in allowed_keys.items():

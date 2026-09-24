@@ -30,24 +30,28 @@ def init_db():
                 max_positions INTEGER DEFAULT 8,
                 partial_profit_pct REAL DEFAULT 30.0,
                 stagnation_days INTEGER DEFAULT 3,
+                min_headroom_to_100_dema REAL DEFAULT 4.0,
                 updated_at TEXT
             )
         """)
 
-        # Add bucket_capital / tranche_size columns if missing in existing table
+        # Add bucket_capital / tranche_size / min_headroom columns if missing in existing table
         try:
             conn.execute("ALTER TABLE bot_state ADD COLUMN bucket_capital REAL DEFAULT 250000.0")
         except Exception: pass
         try:
             conn.execute("ALTER TABLE bot_state ADD COLUMN tranche_size REAL DEFAULT 50000.0")
         except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_state ADD COLUMN min_headroom_to_100_dema REAL DEFAULT 4.0")
+        except Exception: pass
 
         # Seed initial row if empty
         row = conn.execute("SELECT id FROM bot_state WHERE id = 1").fetchone()
         if not row:
             conn.execute("""
-                INSERT INTO bot_state (id, is_running, mode, total_capital, available_cash, bucket_capital, tranche_size, max_positions, partial_profit_pct, stagnation_days, updated_at)
-                VALUES (1, 0, 'PAPER', 2000000.0, 2000000.0, 250000.0, 50000.0, 8, 30.0, 3, ?)
+                INSERT INTO bot_state (id, is_running, mode, total_capital, available_cash, bucket_capital, tranche_size, max_positions, partial_profit_pct, stagnation_days, min_headroom_to_100_dema, updated_at)
+                VALUES (1, 0, 'PAPER', 2000000.0, 2000000.0, 250000.0, 50000.0, 8, 30.0, 3, 4.0, ?)
             """, (datetime.now(timezone.utc).isoformat(),))
 
         # 2. Open Positions
@@ -96,6 +100,10 @@ def init_db():
                 quantity INTEGER,
                 entry_price REAL,
                 exit_price REAL,
+                gross_pnl REAL DEFAULT 0.0,
+                total_charges REAL DEFAULT 0.0,
+                net_pnl REAL DEFAULT 0.0,
+                charges_breakdown TEXT,
                 realized_pnl REAL,
                 pnl_percent REAL,
                 reason TEXT,
@@ -105,6 +113,18 @@ def init_db():
 
         try:
             conn.execute("ALTER TABLE bot_trades ADD COLUMN strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING'")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_trades ADD COLUMN gross_pnl REAL DEFAULT 0.0")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_trades ADD COLUMN total_charges REAL DEFAULT 0.0")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_trades ADD COLUMN net_pnl REAL DEFAULT 0.0")
+        except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_trades ADD COLUMN charges_breakdown TEXT")
         except Exception: pass
 
         # 4. Chronological Audit Logs
@@ -182,14 +202,45 @@ def delete_open_position(symbol):
     with conn:
         conn.execute("DELETE FROM bot_positions WHERE symbol = ?", (symbol,))
 
-def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl, pnl_pct, reason, strategy_type="TRANCHE_AVERAGING"):
+def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl=None, pnl_pct=None, reason="", strategy_type="TRANCHE_AVERAGING", gross_pnl=None, total_charges=None, net_pnl=None, charges_breakdown=None):
+    from .charges import calculate_charges
+    
+    qty = int(quantity) if quantity else 0
+    ep = float(entry_price) if entry_price else 0.0
+    xp = float(exit_price) if exit_price else 0.0
+
+    if "SELL" in str(trade_type).upper() and ep > 0 and xp > 0 and qty > 0:
+        calculated_gross = round((xp - ep) * qty, 2)
+        charges_data = calculate_charges(ep, xp, qty, is_delivery=True)
+        calculated_charges = charges_data["total_charges"]
+        calculated_net = round(calculated_gross - calculated_charges, 2)
+        calc_pct = round((calculated_net / (ep * qty)) * 100.0, 2)
+
+        final_gross = round(gross_pnl if gross_pnl is not None else calculated_gross, 2)
+        final_charges = round(total_charges if total_charges is not None else calculated_charges, 2)
+        final_net = round(net_pnl if net_pnl is not None else calculated_net, 2)
+        final_pct = pnl_pct if pnl_pct is not None else calc_pct
+        final_breakdown = charges_breakdown if charges_breakdown is not None else json.dumps(charges_data)
+        final_realized = final_net
+    else:
+        final_gross = round(pnl if pnl is not None else 0.0, 2)
+        final_charges = 0.0
+        final_net = final_gross
+        final_pct = pnl_pct if pnl_pct is not None else 0.0
+        final_breakdown = json.dumps({})
+        final_realized = final_gross
+
     conn = get_connection()
     with conn:
         conn.execute("""
-            INSERT INTO bot_trades (symbol, strategy_type, trade_type, quantity, entry_price, exit_price, realized_pnl, pnl_percent, reason, executed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bot_trades (
+                symbol, strategy_type, trade_type, quantity, entry_price, exit_price, 
+                gross_pnl, total_charges, net_pnl, charges_breakdown, realized_pnl, pnl_percent, reason, executed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            symbol, strategy_type, trade_type, quantity, entry_price, exit_price, round(pnl, 2), round(pnl_pct, 2), reason,
+            symbol, strategy_type, trade_type, qty, ep, xp,
+            final_gross, final_charges, final_net, final_breakdown, final_realized, final_pct, reason,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
 
