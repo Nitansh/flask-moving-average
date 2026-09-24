@@ -218,125 +218,136 @@ class BotRunner:
                                 update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
                                 log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
 
-    def fetch_live_scan_candidates(self):
+    def fetch_live_scan_candidates(self, wait_for_completion=True, max_wait_seconds=300):
         """
-        Retrieves candidate stocks from moving-average's built-in live scan pipeline:
-        1. Node.js Live Scan Cache API (http://127.0.0.1:3000/api/full-list or /api/bullish-list)
-        2. SQLite DB cache in movingAverage/auth.db (scan_results table)
-        3. Fallback: Internal live technical scan of top liquid Nifty stocks
+        Retrieves candidate stocks EXCLUSIVELY from moving-average's universe scanner.
+        NO FALLBACKS: Only the official moving-average universe pipeline is used.
+        If a scan is in progress, waits until all stocks are 100% scanned and processed.
         Returns: (candidates_list, source_description)
         """
-        # 1. Check Node.js scan status first - DO NOT trade if scan is in progress!
-        for port in [3000, 8080]:
-            try:
-                import requests
-                status_resp = requests.get(f"http://127.0.0.1:{port}/api/scan/status", timeout=2.5)
-                if status_resp.status_code == 200:
-                    status_data = status_resp.json()
-                    if status_data.get("isScanning"):
-                        processed = status_data.get("processedCount", 0)
-                        total = status_data.get("totalStocks", 0)
-                        log_event("INFO", f"Moving-average scan is currently in progress ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
-                        return [], f"moving-average scan in progress ({processed}/{total})"
-            except Exception:
-                pass
+        import requests
+        import time
 
-        # 2. Fetch completed scan results from Node.js in-memory live scan API
-        for port in [3000, 8080]:
+        ports = [3000, 8080]
+
+        # Helper to check scan status on Node.js
+        def get_scan_status():
+            for port in ports:
+                try:
+                    resp = requests.get(f"http://127.0.0.1:{port}/api/scan/status", timeout=2.5)
+                    if resp.status_code == 200:
+                        return port, resp.json()
+                except Exception:
+                    pass
+            return None, None
+
+        # Helper to fetch completed results
+        def get_scan_results(port):
             for endpoint in ["/api/scan/results", "/api/full-list"]:
                 try:
-                    import requests
-                    resp = requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=10.0)
+                    resp = requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=15.0)
                     if resp.status_code == 200:
                         stocks = resp.json()
                         if isinstance(stocks, list) and len(stocks) > 0:
-                            return stocks, f"Node.js live scan cache (port {port}{endpoint}, {len(stocks)} stocks)"
+                            return stocks, f"movingAverage live universe cache (port {port}{endpoint}, {len(stocks)} stocks)"
                 except Exception:
                     pass
+            return None, None
 
-        # 3. Try SQLite DB scan_results table in movingAverage/auth.db
-        possible_db_paths = [
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "movingAverage", "auth.db")),
-            os.path.abspath("c:/moving-average/movingAverage/auth.db"),
-            os.path.abspath(os.path.join(os.getcwd(), "movingAverage", "auth.db")),
-        ]
-        for db_path in possible_db_paths:
-            if os.path.exists(db_path):
-                try:
-                    conn = sqlite3.connect(db_path, timeout=5.0)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT data FROM scan_results")
-                    rows = cursor.fetchall()
-                    conn.close()
-                    if rows:
-                        stocks = []
-                        for r in rows:
-                            try:
-                                if r[0]:
-                                    stocks.append(json.loads(r[0]))
-                            except Exception:
-                                pass
-                        if stocks:
-                            return stocks, f"movingAverage SQLite DB (auth.db:scan_results, {len(stocks)} stocks)"
-                except Exception:
-                    pass
+        # Helper to query SQLite auth.db
+        def get_db_results():
+            possible_db_paths = [
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "movingAverage", "auth.db")),
+                os.path.abspath("c:/moving-average/movingAverage/auth.db"),
+                os.path.abspath(os.path.join(os.getcwd(), "movingAverage", "auth.db")),
+            ]
+            for db_path in possible_db_paths:
+                if os.path.exists(db_path):
+                    try:
+                        conn = sqlite3.connect(db_path, timeout=5.0)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT data FROM scan_results")
+                        rows = cursor.fetchall()
+                        conn.close()
+                        if rows:
+                            stocks = []
+                            for r in rows:
+                                try:
+                                    if r[0]:
+                                        stocks.append(json.loads(r[0]))
+                                except Exception:
+                                    pass
+                            if stocks:
+                                return stocks, f"movingAverage SQLite DB (auth.db:scan_results, {len(stocks)} stocks)"
+                    except Exception:
+                        pass
+            return None, None
 
-        # 4. Fallback: Full Nifty universe evaluated using historical cache / Yahoo Finance
-        try:
-            from app import custom_stock_df, MCAP
-            from finta import TA
-            import pandas as pd
-            import csv
+        active_port, status_data = get_scan_status()
 
-            csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "nifty500.csv"))
-            universe_symbols = []
-            if os.path.exists(csv_path):
-                with open(csv_path, mode='r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    next(reader, None)  # skip header
-                    for row in reader:
-                        if len(row) >= 3 and row[2].strip():
-                            universe_symbols.append(row[2].strip().upper())
+        if status_data:
+            is_scanning = status_data.get("isScanning", False)
+            processed = status_data.get("processedCount", 0)
+            total = status_data.get("totalStocks", 0)
 
-            if not universe_symbols:
-                universe_symbols = list(MCAP.keys())[:100]
+            # 1. If currently scanning, wait until complete if wait_for_completion=True
+            if is_scanning:
+                if not wait_for_completion:
+                    log_event("INFO", f"Moving-average scan is currently in progress ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
+                    return [], f"moving-average scan in progress ({processed}/{total})"
 
-            today = datetime.now(IST).date()
-            from_date = today - timedelta(days=365)
-            to_date = today + timedelta(days=1)
+                log_event("INFO", f"Moving-average universe scan is currently in progress ({processed}/{total} stocks). Bot will wait until all stocks are scanned...")
+                start_wait = time.time()
+                while time.time() - start_wait < max_wait_seconds:
+                    time.sleep(3.0)
+                    _, cur_status = get_scan_status()
+                    if not cur_status:
+                        break
+                    cur_proc = cur_status.get("processedCount", 0)
+                    cur_scanning = cur_status.get("isScanning", False)
+                    if not cur_scanning:
+                        log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
+                        break
+                    if int(time.time() - start_wait) % 30 == 0:
+                        log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
 
-            scanned = []
-            for sym in universe_symbols:
-                try:
-                    df = custom_stock_df(symbol=sym, from_date=from_date, to_date=to_date, series="EQ")
-                    if df is not None and not df.empty and len(df) >= 50:
-                        cur_p = float(df.iloc[-1]['CLOSE'])
-                        rsi_series = TA.RSI(df)
-                        rsi_val = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
-                        d20 = float(TA.DEMA(df, 20).iloc[-1])
-                        d50 = float(TA.DEMA(df, 50).iloc[-1])
-                        d100 = float(TA.DEMA(df, 100).iloc[-1])
-                        d200 = float(TA.DEMA(df, 200).iloc[-1])
+            # 2. If scan hasn't been started yet (0 stocks in cache), trigger universe scan and wait
+            elif processed == 0:
+                if wait_for_completion:
+                    log_event("INFO", f"No scan data found in universe pipeline. Initiating full scan across all {total} stocks and awaiting completion...")
+                    try:
+                        requests.post(f"http://127.0.0.1:{active_port}/api/scan/start", timeout=5.0)
+                    except Exception:
+                        pass
+                    start_wait = time.time()
+                    time.sleep(2.0)
+                    while time.time() - start_wait < max_wait_seconds:
+                        time.sleep(3.0)
+                        _, cur_status = get_scan_status()
+                        if not cur_status:
+                            break
+                        cur_proc = cur_status.get("processedCount", 0)
+                        cur_scanning = cur_status.get("isScanning", False)
+                        if not cur_scanning and cur_proc > 0:
+                            log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
+                            break
+                        if int(time.time() - start_wait) % 30 == 0:
+                            log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
 
-                        scanned.append({
-                            "symbol": sym,
-                            "price": cur_p,
-                            "DMA_20": d20,
-                            "DMA_50": d50,
-                            "DMA_100": d100,
-                            "DMA_200": d200,
-                            "rsi": rsi_val,
-                            "volume": int(df.iloc[-1]['VOLUME']) if ('VOLUME' in df.columns and not pd.isna(df.iloc[-1]['VOLUME'])) else 0,
-                            "mcap": MCAP.get(sym, 50000)
-                        })
-                except Exception:
-                    continue
-            if scanned:
-                return scanned, f"Internal Live Market Scanner ({len(scanned)} Nifty universe stocks)"
-        except Exception:
-            pass
+        # 3. Retrieve completed scan results from Node.js in-memory live scan API
+        if active_port:
+            stocks, desc = get_scan_results(active_port)
+            if stocks:
+                return stocks, desc
 
-        return [], "No live scan source available"
+        # 4. Try SQLite DB scan_results table in movingAverage/auth.db
+        stocks, desc = get_db_results()
+        if stocks:
+            return stocks, desc
+
+        # NO FALLBACK: strictly use universe code
+        log_event("WARNING", "Universe scan feed returned 0 stocks. The bot requires a completed moving-average universe scan before opening trades.")
+        return [], "No universe scan data available"
 
     def _scan_and_enter(self, candidate_stocks=None):
         """

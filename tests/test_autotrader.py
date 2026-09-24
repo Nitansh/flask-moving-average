@@ -514,7 +514,7 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
     assert open_pos[0]["symbol"] == "RELIANCE"
 
 def test_fetch_live_scan_candidates_blocks_while_scanning(monkeypatch):
-    """When moving-average scanner reports isScanning=True, candidate fetch must return empty to avoid partial trading."""
+    """When moving-average scanner reports isScanning=True and wait_for_completion=False, candidate fetch must return empty."""
     from auto_trader.bot_runner import bot_runner
     import requests
 
@@ -524,9 +524,44 @@ def test_fetch_live_scan_candidates_blocks_while_scanning(monkeypatch):
             return {"isScanning": True, "processedCount": 120, "totalStocks": 2246}
 
     monkeypatch.setattr(requests, "get", lambda url, timeout=None: MockResponse())
-    candidates, source = bot_runner.fetch_live_scan_candidates()
+    candidates, source = bot_runner.fetch_live_scan_candidates(wait_for_completion=False)
     assert candidates == []
     assert "scan in progress" in source
+
+def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monkeypatch):
+    """Bot should wait until isScanning becomes False, then fetch completed results."""
+    from auto_trader.bot_runner import bot_runner
+    import requests
+
+    call_count = {"status": 0}
+
+    class MockStatusResponse:
+        status_code = 200
+        def json(self):
+            call_count["status"] += 1
+            # First call: scanning; second call: complete!
+            if call_count["status"] <= 1:
+                return {"isScanning": True, "processedCount": 500, "totalStocks": 2246}
+            return {"isScanning": False, "processedCount": 2246, "totalStocks": 2246}
+
+    class MockResultsResponse:
+        status_code = 200
+        def json(self):
+            return [{"symbol": "RELIANCE", "price": 2500.0, "DMA_20": 2400.0, "DMA_50": 2300.0, "DMA_100": 2800.0}]
+
+    def mock_get(url, timeout=None):
+        if "status" in url:
+            return MockStatusResponse()
+        elif "results" in url or "full-list" in url:
+            return MockResultsResponse()
+        return MockStatusResponse()
+
+    monkeypatch.setattr(requests, "get", mock_get)
+    candidates, source = bot_runner.fetch_live_scan_candidates(wait_for_completion=True, max_wait_seconds=10)
+    assert len(candidates) == 1
+    assert candidates[0]["symbol"] == "RELIANCE"
+    assert "live universe cache" in source
+
 
 
 
