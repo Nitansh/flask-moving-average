@@ -218,17 +218,28 @@ class BotRunner:
                                 update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
                                 log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
 
-    def fetch_live_scan_candidates(self, wait_for_completion=True, max_wait_seconds=300):
+    def fetch_live_scan_candidates(self, wait_for_completion=True, max_wait_seconds=1800, poll_interval_seconds=60.0):
         """
         Retrieves candidate stocks EXCLUSIVELY from moving-average's universe scanner.
         NO FALLBACKS: Only the official moving-average universe pipeline is used.
         If a scan is in progress, waits until all stocks are 100% scanned and processed.
+        Waits for 1 minute (poll_interval_seconds=60.0) between scan progress checks.
         Returns: (candidates_list, source_description)
         """
         import requests
         import time
 
         ports = [3000, 8080]
+
+        def _interruptible_sleep(seconds):
+            step = 1.0
+            elapsed = 0.0
+            while elapsed < seconds:
+                if self.stop_requested:
+                    break
+                to_sleep = min(step, seconds - elapsed)
+                time.sleep(to_sleep)
+                elapsed += to_sleep
 
         # Helper to check scan status on Node.js
         def get_scan_status():
@@ -296,10 +307,12 @@ class BotRunner:
                     log_event("INFO", f"Moving-average scan is currently in progress ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
                     return [], f"moving-average scan in progress ({processed}/{total})"
 
-                log_event("INFO", f"Moving-average universe scan is currently in progress ({processed}/{total} stocks). Bot will wait until all stocks are scanned...")
+                log_event("INFO", f"Moving-average universe scan is currently in progress ({processed}/{total} stocks). Bot will wait until all stocks are scanned (waiting 1 minute between checks)...")
                 start_wait = time.time()
-                while time.time() - start_wait < max_wait_seconds:
-                    time.sleep(3.0)
+                while time.time() - start_wait < max_wait_seconds and not self.stop_requested:
+                    _interruptible_sleep(poll_interval_seconds)
+                    if self.stop_requested:
+                        break
                     _, cur_status = get_scan_status()
                     if not cur_status:
                         break
@@ -308,21 +321,22 @@ class BotRunner:
                     if not cur_scanning:
                         log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
                         break
-                    if int(time.time() - start_wait) % 30 == 0:
-                        log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
+                    log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
 
             # 2. If scan hasn't been started yet (0 stocks in cache), trigger universe scan and wait
             elif processed == 0:
                 if wait_for_completion:
-                    log_event("INFO", f"No scan data found in universe pipeline. Initiating full scan across all {total} stocks and awaiting completion...")
+                    log_event("INFO", f"No scan data found in universe pipeline. Initiating full scan across all {total} stocks and awaiting completion (waiting 1 minute between checks)...")
                     try:
                         requests.post(f"http://127.0.0.1:{active_port}/api/scan/start", timeout=5.0)
                     except Exception:
                         pass
                     start_wait = time.time()
-                    time.sleep(2.0)
-                    while time.time() - start_wait < max_wait_seconds:
-                        time.sleep(3.0)
+                    _interruptible_sleep(min(5.0, poll_interval_seconds))
+                    while time.time() - start_wait < max_wait_seconds and not self.stop_requested:
+                        _interruptible_sleep(poll_interval_seconds)
+                        if self.stop_requested:
+                            break
                         _, cur_status = get_scan_status()
                         if not cur_status:
                             break
@@ -331,8 +345,7 @@ class BotRunner:
                         if not cur_scanning and cur_proc > 0:
                             log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
                             break
-                        if int(time.time() - start_wait) % 30 == 0:
-                            log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
+                        log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
 
         # 3. Retrieve completed scan results from Node.js in-memory live scan API
         if active_port:

@@ -557,7 +557,7 @@ def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monke
         return MockStatusResponse()
 
     monkeypatch.setattr(requests, "get", mock_get)
-    candidates, source = bot_runner.fetch_live_scan_candidates(wait_for_completion=True, max_wait_seconds=10)
+    candidates, source = bot_runner.fetch_live_scan_candidates(wait_for_completion=True, max_wait_seconds=10, poll_interval_seconds=0.01)
     assert len(candidates) == 1
     assert candidates[0]["symbol"] == "RELIANCE"
     assert "live universe cache" in source
