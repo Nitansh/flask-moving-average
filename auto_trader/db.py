@@ -317,6 +317,9 @@ def get_rankings(limit=100):
         rankings = []
         for r in rows:
             d = dict(r)
+            d["composite_score"] = d.get("rank_score", 0.0)
+            d["current_price"] = d.get("price", 0.0)
+            d["rationale"] = d.get("action_reason", "")
             try:
                 d["breakdown"] = json.loads(d["details"]) if d.get("details") else {}
             except Exception:

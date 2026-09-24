@@ -475,8 +475,10 @@ class BotRunner:
                 "rank": idx,
                 "symbol": c["symbol"],
                 "rank_score": round(float(c["rank_score"]), 1),
+                "composite_score": round(float(c["rank_score"]), 1),
                 "mcap_tier": mcap_tier_val,
                 "price": price_val,
+                "current_price": price_val,
                 "headroom_pct": round(hr_val, 1),
                 "dema_100": dema_100_val,
                 "rsi": round(rsi_val, 1),
@@ -484,6 +486,7 @@ class BotRunner:
                 "strategy_type": strat_val,
                 "status": item_status,
                 "action_reason": c["reason"],
+                "rationale": c["reason"],
                 "breakdown": b,
                 "stock": c["stock"]
             }
