@@ -95,47 +95,32 @@ def test_strategy_entry_scanner_flagged_still_checks_headroom():
     assert is_valid is True
     assert "Live Scanner Confirmed" in reason
 
-def test_tranche_scale_in_pullback_to_20_dema():
-    """Stock pulling back to 20 DEMA support should trigger an averaging tranche."""
+def test_tranche_scale_in_requires_minimum_price_dip():
+    """Stock must pull back at least -3.0% below average buy price to add an averaging tranche."""
     position = {
         "symbol": "TRENT",
         "initial_qty": 10,
         "current_qty": 10,
         "buy_price": 5000.0,
         "tranches_count": 1,
-        "invested_amount": 50000.0
+        "invested_amount": 50000.0,
+        "stop_loss": 4650.0
     }
     current_dema = {
-        "dema_20": 4980.0,
+        "dema_20": 4800.0,
         "dema_50": 4700.0,
         "dema_100": 5400.0,
         "dema_200": 5800.0
     }
-    # Price is 5010.0 (which is +0.6% above 20 DEMA 4980.0)
-    should_scale, reason = StrategyEngine.evaluate_scale_in(position, 5010.0, current_dema)
+    # Case 1: Insufficient dip (4950.0 is only -1.0% dip from 5000.0) -> MUST REJECT
+    should_scale, reason = StrategyEngine.evaluate_scale_in(position, 4950.0, current_dema)
+    assert should_scale is False
+    assert "minimum -3.0% pullback" in reason
+
+    # Case 2: Genuine dip (4820.0 is -3.6% dip below 5000.0, holding above 50 DEMA 4700) -> MUST QUALIFY
+    should_scale, reason = StrategyEngine.evaluate_scale_in(position, 4820.0, current_dema)
     assert should_scale is True
     assert "Dip-Buy Tranche" in reason
-
-def test_tranche_scale_in_pyramiding_momentum():
-    """Stock gaining +2.5% with upside to 100 DEMA should qualify for pyramiding tranche."""
-    position = {
-        "symbol": "BEL",
-        "initial_qty": 200,
-        "current_qty": 200,
-        "buy_price": 250.0,
-        "tranches_count": 1,
-        "invested_amount": 50000.0
-    }
-    current_dema = {
-        "dema_20": 248.0,
-        "dema_50": 240.0,
-        "dema_100": 280.0,
-        "dema_200": 300.0
-    }
-    # Price moved to 257.0 (+2.8% gain)
-    should_scale, reason = StrategyEngine.evaluate_scale_in(position, 257.0, current_dema)
-    assert should_scale is True
-    assert "Pyramid Tranche" in reason
 
 def test_tranche_bucket_cap_enforcement():
     """Cannot add more than 5 tranches or exceed ₹2.5L bucket cap."""
@@ -526,7 +511,7 @@ def test_fetch_live_scan_candidates_blocks_while_scanning(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda url, timeout=None: MockResponse())
     candidates, source = bot_runner.fetch_live_scan_candidates(wait_for_completion=False)
     assert candidates == []
-    assert "scan in progress" in source
+    assert "incomplete" in source or "scan in progress" in source
 
 def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monkeypatch):
     """Bot should wait until isScanning becomes False, then fetch completed results."""
@@ -541,8 +526,8 @@ def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monke
             call_count["status"] += 1
             # First call: scanning; second call: complete!
             if call_count["status"] <= 1:
-                return {"isScanning": True, "processedCount": 500, "totalStocks": 2246}
-            return {"isScanning": False, "processedCount": 2246, "totalStocks": 2246}
+                return {"isScanning": True, "isComplete": False, "processedCount": 0, "totalStocks": 1}
+            return {"isScanning": False, "isComplete": True, "processedCount": 1, "totalStocks": 1}
 
     class MockResultsResponse:
         status_code = 200

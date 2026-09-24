@@ -89,6 +89,9 @@ def init_db():
         try:
             conn.execute("ALTER TABLE bot_positions ADD COLUMN strategy_type TEXT DEFAULT 'TRANCHE_AVERAGING'")
         except Exception: pass
+        try:
+            conn.execute("ALTER TABLE bot_positions ADD COLUMN last_tranche_time TEXT")
+        except Exception: pass
 
         # 3. Completed Trades
         conn.execute("""
@@ -133,6 +136,27 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 level TEXT DEFAULT 'INFO', -- INFO, SUCCESS, WARNING, ERROR
                 message TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+        """)
+
+        # 5. Opportunity Rankings Leaderboard
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_rankings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rank INTEGER,
+                symbol TEXT,
+                rank_score REAL,
+                mcap_tier TEXT,
+                price REAL,
+                headroom_pct REAL,
+                dema_100 REAL,
+                rsi REAL,
+                volume INTEGER,
+                strategy_type TEXT,
+                status TEXT, -- SELECTED_TO_BUY, BOUGHT, QUEUED_CAPACITY, QUALIFIED
+                action_reason TEXT,
                 details TEXT,
                 created_at TEXT
             )
@@ -254,12 +278,62 @@ def get_recent_logs(limit=100):
     rows = conn.execute("SELECT * FROM bot_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
 
+def save_rankings(rankings_list):
+    """Saves the latest multi-factor ranked opportunities into bot_rankings."""
+    try:
+        conn = get_connection()
+        with conn:
+            conn.execute("DELETE FROM bot_rankings")
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for r in rankings_list:
+                details_json = json.dumps(r.get("breakdown") or {})
+                conn.execute("""
+                    INSERT INTO bot_rankings (rank, symbol, rank_score, mcap_tier, price, headroom_pct, dema_100, rsi, volume, strategy_type, status, action_reason, details, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    r.get("rank", 0),
+                    r.get("symbol", ""),
+                    float(r.get("rank_score", 0.0)),
+                    r.get("mcap_tier", "Smallcap"),
+                    float(r.get("price", 0.0)),
+                    float(r.get("headroom_pct", 0.0)),
+                    float(r.get("dema_100", 0.0)),
+                    float(r.get("rsi", 0.0)),
+                    int(r.get("volume", 0)),
+                    r.get("strategy_type", "TRANCHE_AVERAGING"),
+                    r.get("status", "QUALIFIED"),
+                    r.get("action_reason", ""),
+                    details_json,
+                    now_str
+                ))
+    except Exception as e:
+        print(f"Error saving rankings: {e}")
+
+def get_rankings(limit=100):
+    """Retrieves the latest ranked opportunities from bot_rankings."""
+    try:
+        conn = get_connection()
+        rows = conn.execute("SELECT * FROM bot_rankings ORDER BY rank ASC LIMIT ?", (limit,)).fetchall()
+        rankings = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["breakdown"] = json.loads(d["details"]) if d.get("details") else {}
+            except Exception:
+                d["breakdown"] = {}
+            rankings.append(d)
+        return rankings
+    except Exception as e:
+        print(f"Error getting rankings: {e}")
+        return []
+
 def reset_autotrader(initial_capital=2000000.0):
     """
     Resets the Auto-Trader database to pristine initial testing state:
     - Clears all open positions
     - Clears all completed trades
     - Clears all audit logs
+    - Clears all opportunity rankings
     - Resets bot state: available_cash = initial_capital, total_capital = initial_capital, is_running = 0
     """
     conn = get_connection()
@@ -267,6 +341,7 @@ def reset_autotrader(initial_capital=2000000.0):
         conn.execute("DELETE FROM bot_positions")
         conn.execute("DELETE FROM bot_trades")
         conn.execute("DELETE FROM bot_logs")
+        conn.execute("DELETE FROM bot_rankings")
         conn.execute("""
             UPDATE bot_state
             SET is_running = 0,

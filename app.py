@@ -918,7 +918,7 @@ def get_sector_trends_route():
 # ==========================================
 try:
     from auto_trader import bot_runner, BotConfig
-    from auto_trader.db import update_bot_state, get_open_positions, get_trades, get_recent_logs
+    from auto_trader.db import update_bot_state, get_open_positions, get_trades, get_recent_logs, get_rankings
 
     @app.route('/api/autotrader/status', methods=['GET'])
     def get_autotrader_status():
@@ -1010,6 +1010,18 @@ try:
         try:
             limit = int(request.args.get("limit", 100))
             return jsonify({"logs": get_recent_logs(limit=limit)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/ranking', methods=['GET'])
+    def get_autotrader_ranking():
+        try:
+            rankings = bot_runner.ranked_opportunities or get_rankings(limit=100)
+            return jsonify({
+                "rankings": rankings,
+                "lastRankingTime": bot_runner.last_ranking_time,
+                "totalQualified": len(rankings)
+            }), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

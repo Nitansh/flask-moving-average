@@ -254,47 +254,43 @@ class StrategyEngine:
     @staticmethod
     def evaluate_scale_in(position, current_price, current_dema, rsi=None):
         """
-        Evaluates whether an active position qualifies for an additional ₹50,000 averaging tranche.
-        Criteria:
+        Evaluates whether an active position qualifies for an additional averaging tranche.
+        STRICT TRUE PRICE-DIP AVERAGING RULES:
         1. Position has not reached max tranches (5 tranches = ₹2.5L).
-        2. Scenario A (Bounce on 20 DEMA Support): Price pulled back to within 0.0% - 1.5% of 20 DEMA while > 50 DEMA.
-        3. Scenario B (Momentum Pyramiding): Price is >= +2.0% above current buy_price with upside headroom to 100 DEMA.
-        4. Scenario C (100 DEMA Breakout): Price is breaking cleanly above 100 DEMA (> 101%) targeting 200 DEMA.
+        2. Real Price Dip Required: Current price MUST be at least 3.0% below the average buy_price
+           (dip_pct >= 3.0%). Adding tranches at the same or slightly different price is strictly rejected.
+        3. Structural Safety Floor: Current price must remain above 50 DEMA and above stop_loss.
+           Never average down into a broken structure.
         """
         tranches_count = int(position.get("tranches_count", 1))
         if tranches_count >= BotConfig.MAX_TRANCHES_PER_STOCK:
             return False, "Maximum 5 tranches (₹2.5L) already deployed"
 
+        buy_price = float(position.get("buy_price") or 0.0)
+        if buy_price <= 0:
+            return False, "Invalid buy price"
+
+        # Mandatory rule: Current price MUST have dropped at least 3.0% below average buy price
+        dip_pct = ((buy_price - current_price) / buy_price) * 100.0
+        if dip_pct < 3.0:
+            return False, f"Price only dipped {dip_pct:.2f}% (minimum -3.0% pullback from ₹{buy_price:.2f} required to average down)"
+
         dema_20 = current_dema.get("dema_20") or position.get("dema_20")
         dema_50 = current_dema.get("dema_50") or position.get("dema_50")
-        dema_100 = current_dema.get("dema_100") or position.get("dema_100")
-        dema_200 = current_dema.get("dema_200") or position.get("dema_200")
-        buy_price = position["buy_price"]
+        stop_loss = float(position.get("stop_loss", 0.0))
 
-        if not (dema_20 and dema_50):
-            return False, "Missing DEMA indicators"
+        if not dema_50:
+            return False, "Missing 50 DEMA indicator"
 
-        # Never average down if price broke below 50 DEMA
+        # Safety floor 1: Must be above stop-loss
+        if stop_loss > 0 and current_price <= stop_loss:
+            return False, f"Price (₹{current_price:.2f}) is at or below stop loss (₹{stop_loss:.2f}); averaging blocked"
+
+        # Safety floor 2: Must stay above 50 DEMA support
         if current_price < dema_50:
-            return False, "Price below 50 DEMA; cannot average into a breakdown"
+            return False, f"Price (₹{current_price:.2f}) broke below 50 DEMA (₹{dema_50:.2f}); cannot average into a breakdown"
 
-        # Scenario A: Healthy pullback to rising 20 DEMA support
-        dist_to_20_dema_pct = ((current_price - dema_20) / dema_20) * 100.0
-        if 0.0 <= dist_to_20_dema_pct <= 1.5 and dema_20 > dema_50:
-            return True, f"Dip-Buy Tranche #{tranches_count + 1}: Testing rising 20 DEMA support (+{dist_to_20_dema_pct:.1f}%)"
-
-        # Scenario B: Pyramiding on strength (+2% from average buy price)
-        pnl_pct = ((current_price - buy_price) / buy_price) * 100.0
-        if pnl_pct >= 2.0:
-            if dema_100 and current_price < (dema_100 * 0.985):
-                return True, f"Pyramid Tranche #{tranches_count + 1}: Momentum continuation (+{pnl_pct:.1f}% gain with room to 100 DEMA)"
-
-        # Scenario C: 100 DEMA Breakout confirmation
-        if dema_100 and current_price >= (dema_100 * 1.01):
-            if dema_200 and ((dema_200 - current_price) / current_price) >= 0.03:
-                return True, f"Breakout Tranche #{tranches_count + 1}: Clean 100 DEMA bisect targeting 200 DEMA"
-
-        return False, "No tranche averaging condition met"
+        return True, f"Dip-Buy Tranche #{tranches_count + 1}: Real price dip of -{dip_pct:.1f}% below avg buy price (₹{buy_price:.2f} -> ₹{current_price:.2f}), holding 50 DEMA support"
 
     @staticmethod
     def evaluate_exit(position, current_price, current_dema):

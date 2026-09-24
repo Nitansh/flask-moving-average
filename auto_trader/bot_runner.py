@@ -14,7 +14,7 @@ from .config import BotConfig
 from .db import (
     get_bot_state, update_bot_state, get_open_positions, save_open_position,
     delete_open_position, record_trade, log_event, get_trades, get_recent_logs,
-    reset_autotrader
+    reset_autotrader, save_rankings, get_rankings
 )
 from .kite_client import KiteTraderClient
 from .risk_manager import RiskManager
@@ -29,6 +29,8 @@ class BotRunner:
         self.client = None
         self.lock = threading.Lock()
         self.last_scan_time = None
+        self.ranked_opportunities = []
+        self.last_ranking_time = None
 
     def is_market_open(self):
         """Checks if current time is within Indian Stock Market hours (09:15 - 15:30 IST, Mon-Fri)."""
@@ -66,6 +68,8 @@ class BotRunner:
             self.stop_requested = True
             reset_autotrader(initial_capital=initial_capital)
             self.last_scan_time = None
+            self.ranked_opportunities = []
+            self.last_ranking_time = None
             return True, "Auto-Trader reset to initial testing state."
 
     def _run_loop(self):
@@ -186,37 +190,52 @@ class BotRunner:
             # Tranche Averaging & Scaling In (Allowed only for TRANCHE_AVERAGING)
             # -----------------------------------------------------------------
             if action == "NONE" and pos.get("phase") in ["ENTRY", "TARGET_1_LOCKED"]:
-                can_scale, _ = RiskManager.can_add_tranche(pos)
-                if can_scale:
-                    should_scale, scale_reason = StrategyEngine.evaluate_scale_in(pos, live_price, dema_data)
-                    if should_scale:
-                        add_qty = RiskManager.calculate_tranche_qty(live_price)
-                        if add_qty > 0:
-                            order_res = self.client.place_buy_order(symbol, add_qty, live_price)
-                            if order_res.get("status") == "SUCCESS":
-                                exec_price = float(order_res.get("executed_price", live_price))
-                                old_qty = pos["current_qty"]
-                                old_invested = pos.get("invested_amount") or (old_qty * pos["buy_price"])
-                                add_cost = add_qty * exec_price
+                # Cooldown guard: require at least 4 hours between tranches to prevent rapid buying
+                last_time_str = pos.get("last_tranche_time") or pos.get("updated_at") or pos.get("entry_date")
+                can_add_by_time = True
+                if last_time_str:
+                    try:
+                        last_dt = datetime.strptime(str(last_time_str)[:19], "%Y-%m-%d %H:%M:%S")
+                        if (datetime.now() - last_dt).total_seconds() < 14400: # 4 hours
+                            can_add_by_time = False
+                    except Exception:
+                        pass
 
-                                new_total_qty = old_qty + add_qty
-                                new_invested = old_invested + add_cost
-                                new_avg_price = new_invested / new_total_qty
-                                new_tranches = int(pos.get("tranches_count", 1)) + 1
+                if can_add_by_time:
+                    can_scale, _ = RiskManager.can_add_tranche(pos)
+                    if can_scale:
+                        should_scale, scale_reason = StrategyEngine.evaluate_scale_in(pos, live_price, dema_data)
+                        if should_scale:
+                            add_qty = RiskManager.calculate_tranche_qty(live_price)
+                            if add_qty > 0:
+                                order_res = self.client.place_buy_order(symbol, add_qty, live_price)
+                                if order_res.get("status") == "SUCCESS":
+                                    exec_price = float(order_res.get("executed_price", live_price))
+                                    old_qty = pos["current_qty"]
+                                    old_invested = pos.get("invested_amount") or (old_qty * pos["buy_price"])
+                                    add_cost = add_qty * exec_price
 
-                                pos["current_qty"] = new_total_qty
-                                pos["initial_qty"] = int(pos.get("initial_qty", old_qty)) + add_qty
-                                pos["buy_price"] = round(new_avg_price, 2)
-                                pos["invested_amount"] = round(new_invested, 2)
-                                pos["tranches_count"] = new_tranches
-                                pos["stop_loss"] = round(new_avg_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
+                                    new_total_qty = old_qty + add_qty
+                                    new_invested = old_invested + add_cost
+                                    new_avg_price = new_invested / new_total_qty
+                                    new_tranches = int(pos.get("tranches_count", 1)) + 1
+                                    now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-                                save_open_position(pos)
-                                record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}", strategy_type="TRANCHE_AVERAGING")
+                                    pos["current_qty"] = new_total_qty
+                                    pos["initial_qty"] = int(pos.get("initial_qty", old_qty)) + add_qty
+                                    pos["buy_price"] = round(new_avg_price, 2)
+                                    pos["invested_amount"] = round(new_invested, 2)
+                                    pos["tranches_count"] = new_tranches
+                                    pos["last_tranche_time"] = now_str
+                                    pos["updated_at"] = now_str
+                                    pos["stop_loss"] = round(new_avg_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
 
-                                state = get_bot_state()
-                                update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
-                                log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
+                                    save_open_position(pos)
+                                    record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}", strategy_type="TRANCHE_AVERAGING")
+
+                                    state = get_bot_state()
+                                    update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
+                                    log_event("SUCCESS", f"Added Tranche #{new_tranches} for {symbol}: {add_qty} shares @ ₹{exec_price:.2f}. Total: ₹{new_invested:.2f}/{RiskManager.get_bucket_size():.0f} (Avg: ₹{new_avg_price:.2f})")
 
     def fetch_live_scan_candidates(self, wait_for_completion=True, max_wait_seconds=1800, poll_interval_seconds=60.0):
         """
@@ -298,16 +317,27 @@ class BotRunner:
 
         if status_data:
             is_scanning = status_data.get("isScanning", False)
+            is_complete = status_data.get("isComplete", False)
             processed = status_data.get("processedCount", 0)
             total = status_data.get("totalStocks", 0)
 
-            # 1. If currently scanning, wait until complete if wait_for_completion=True
-            if is_scanning:
+            # Strictly require 100% scan completion across the entire universe
+            if not is_complete or (total > 0 and processed < total):
                 if not wait_for_completion:
-                    log_event("INFO", f"Moving-average scan is currently in progress ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
-                    return [], f"moving-average scan in progress ({processed}/{total})"
+                    log_event("INFO", f"Universe scan is incomplete ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
+                    return [], f"universe scan incomplete ({processed}/{total})"
 
-                log_event("INFO", f"Moving-average universe scan is currently in progress ({processed}/{total} stocks). Bot will wait until all stocks are scanned (waiting 1 minute between checks)...")
+                # If not currently scanning, trigger it to start/resume
+                if not is_scanning:
+                    log_event("INFO", f"Universe scan has not scanned all stocks ({processed}/{total}). Initiating full scan across all {total} stocks and awaiting completion (waiting 1 minute between checks)...")
+                    try:
+                        requests.post(f"http://127.0.0.1:{active_port}/api/scan/start", timeout=5.0)
+                    except Exception:
+                        pass
+                    _interruptible_sleep(min(5.0, poll_interval_seconds))
+                else:
+                    log_event("INFO", f"Moving-average universe scan is currently in progress ({processed}/{total} stocks). Bot will wait until 100% of all stocks are scanned (waiting 1 minute between checks)...")
+
                 start_wait = time.time()
                 while time.time() - start_wait < max_wait_seconds and not self.stop_requested:
                     _interruptible_sleep(poll_interval_seconds)
@@ -318,44 +348,38 @@ class BotRunner:
                         break
                     cur_proc = cur_status.get("processedCount", 0)
                     cur_scanning = cur_status.get("isScanning", False)
-                    if not cur_scanning:
-                        log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
-                        break
-                    log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
+                    cur_complete = cur_status.get("isComplete", False)
 
-            # 2. If scan hasn't been started yet (0 stocks in cache), trigger universe scan and wait
-            elif processed == 0:
-                if wait_for_completion:
-                    log_event("INFO", f"No scan data found in universe pipeline. Initiating full scan across all {total} stocks and awaiting completion (waiting 1 minute between checks)...")
-                    try:
-                        requests.post(f"http://127.0.0.1:{active_port}/api/scan/start", timeout=5.0)
-                    except Exception:
-                        pass
-                    start_wait = time.time()
-                    _interruptible_sleep(min(5.0, poll_interval_seconds))
-                    while time.time() - start_wait < max_wait_seconds and not self.stop_requested:
-                        _interruptible_sleep(poll_interval_seconds)
-                        if self.stop_requested:
-                            break
-                        _, cur_status = get_scan_status()
-                        if not cur_status:
-                            break
-                        cur_proc = cur_status.get("processedCount", 0)
-                        cur_scanning = cur_status.get("isScanning", False)
-                        if not cur_scanning and cur_proc > 0:
-                            log_event("SUCCESS", f"Universe scan completed! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
-                            break
-                        log_event("INFO", f"Still waiting for scan completion: {cur_proc}/{total} stocks processed...")
+                    if cur_complete or (total > 0 and cur_proc >= total and not cur_scanning):
+                        log_event("SUCCESS", f"Universe scan completed 100%! {cur_proc}/{total} stocks processed. Compiling full list for ranking...")
+                        break
+                    log_event("INFO", f"Waiting for 100% scan completion: {cur_proc}/{total} stocks processed...")
+
+                # Final verification: check if truly 100% complete
+                _, final_status = get_scan_status()
+                final_proc = final_status.get("processedCount", 0) if final_status else processed
+                final_complete = final_status.get("isComplete", False) if final_status else False
+                if not final_complete and (total > 0 and final_proc < total):
+                    log_event("WARNING", f"Universe scan has not completed all stocks ({final_proc}/{total}). Trading blocked until 100% of stocks are scanned.")
+                    return [], f"universe scan incomplete ({final_proc}/{total})"
 
         # 3. Retrieve completed scan results from Node.js in-memory live scan API
         if active_port:
             stocks, desc = get_scan_results(active_port)
             if stocks:
+                total_expected = status_data.get("totalStocks", 0) if status_data else 0
+                if total_expected > 0 and len(stocks) < total_expected:
+                    log_event("WARNING", f"Live scan feed returned only {len(stocks)}/{total_expected} stocks. Trading blocked until 100% of universe is scanned.")
+                    return [], f"Incomplete scan results ({len(stocks)}/{total_expected})"
                 return stocks, desc
 
         # 4. Try SQLite DB scan_results table in movingAverage/auth.db
         stocks, desc = get_db_results()
         if stocks:
+            total_expected = status_data.get("totalStocks", 0) if status_data else 0
+            if total_expected > 0 and len(stocks) < total_expected:
+                log_event("WARNING", f"SQLite DB scan_results returned only {len(stocks)}/{total_expected} stocks. Trading blocked until 100% of universe is scanned.")
+                return [], f"Incomplete DB scan results ({len(stocks)}/{total_expected})"
             return stocks, desc
 
         # NO FALLBACK: strictly use universe code
@@ -367,7 +391,7 @@ class BotRunner:
         Full-Scan-First Multi-Factor Ranking Engine:
         1. Evaluates ALL candidates across the scan universe first before opening any trades.
         2. Ranks passing candidates by composite score (Headroom 35%, Market Cap 25%, RSI 20%, Volume 20%).
-        3. Logs the top opportunities leaderboard for full transparency.
+        3. Shares and saves the ranked opportunities leaderboard on the frontend before trade execution.
         4. Prioritizes buying the highest-ranked candidates first up to portfolio capacity.
         """
         source_label = "GUI payload"
@@ -377,10 +401,10 @@ class BotRunner:
             stocks_to_scan, source_label = self.fetch_live_scan_candidates()
 
         if not stocks_to_scan:
-            log_event("WARNING", "Live scan feed is currently empty. Start the moving-average scanner or provide candidate stocks.")
+            log_event("WARNING", "Live scan feed is currently empty or scan incomplete. Trading blocked until full universe scan is completed.")
             return
 
-        log_event("INFO", f"Live scan feed: Initiating full scan across {len(stocks_to_scan)} candidate stocks from {source_label}.")
+        log_event("INFO", f"Live scan feed: Initiating full candidate evaluation across {len(stocks_to_scan)} stocks from {source_label}.")
 
         # PHASE 1: Full Candidate Evaluation Scan
         open_symbols = {p["symbol"] for p in get_open_positions()}
@@ -413,36 +437,90 @@ class BotRunner:
         if not qualifying_candidates:
             sample_txt = " | ".join(rejection_samples) if rejection_samples else "all evaluated"
             log_event("INFO", f"Full scan complete: Evaluated {len(stocks_to_scan)} stocks. 0 met entry criteria. Examples: {sample_txt}")
+            self.ranked_opportunities = []
+            save_rankings([])
             return
 
         # PHASE 2: Multi-Factor Ranking & Leaderboard Prioritization
         qualifying_candidates.sort(key=lambda c: c["rank_score"], reverse=True)
 
+        can_open_slots = 0
+        state = get_bot_state()
+        max_positions = int(state.get("max_positions", BotConfig.MAX_ACTIVE_POSITIONS))
+        active_pos_count = len(open_symbols)
+        if active_pos_count < max_positions:
+            can_open_slots = max_positions - active_pos_count
+
         leaderboard_items = []
-        for idx, c in enumerate(qualifying_candidates[:5], 1):
+        ranked_list = []
+        selected_count = 0
+
+        for idx, c in enumerate(qualifying_candidates, 1):
             b = c["breakdown"]
-            hr_str = f"+{b['headroom_pct']:.1f}%" if b['headroom_pct'] else "N/A"
-            rsi_str = f"{b['rsi']:.1f}" if b['rsi'] else "N/A"
-            leaderboard_items.append(f"#{idx} {c['symbol']} ({b['total_score']} pts | {b['mcap_tier']} | Room: {hr_str} | RSI: {rsi_str})")
+            price_val = float(c["stock"].get("price") or c["stock"].get("currentPrice") or 0.0)
+            hr_val = float(b.get("headroom_pct") or 0.0)
+            dema_100_val = float(b.get("dema_100") or 0.0)
+            rsi_val = float(b.get("rsi") or 0.0)
+            mcap_tier_val = b.get("mcap_tier", "Smallcap")
+            vol_val = int(b.get("volume") or 0)
+            strat_val = "ONE_SHOT" if (idx % 2 == 1 and mcap_tier_val in ["Largecap", "Midcap"]) else "TRANCHE_AVERAGING"
 
-        log_event("INFO", f"Full scan ranked {len(qualifying_candidates)} qualified opportunities. Leaderboard: " + " | ".join(leaderboard_items))
+            if selected_count < can_open_slots:
+                item_status = "SELECTED_FOR_BUY"
+                selected_count += 1
+            else:
+                item_status = "QUEUED_CAPACITY"
 
-        # PHASE 3: Prioritized Execution for Highest-Ranked Candidates First
+            rank_item = {
+                "rank": idx,
+                "symbol": c["symbol"],
+                "rank_score": round(float(c["rank_score"]), 1),
+                "mcap_tier": mcap_tier_val,
+                "price": price_val,
+                "headroom_pct": round(hr_val, 1),
+                "dema_100": dema_100_val,
+                "rsi": round(rsi_val, 1),
+                "volume": vol_val,
+                "strategy_type": strat_val,
+                "status": item_status,
+                "action_reason": c["reason"],
+                "breakdown": b,
+                "stock": c["stock"]
+            }
+            ranked_list.append(rank_item)
+
+            if idx <= 5:
+                hr_str = f"+{hr_val:.1f}%" if hr_val else "N/A"
+                rsi_str = f"{rsi_val:.1f}" if rsi_val else "N/A"
+                leaderboard_items.append(f"#{idx} {c['symbol']} ({b['total_score']} pts | {mcap_tier_val} | Room: {hr_str} | RSI: {rsi_str}) [{item_status}]")
+
+        # PUBLISH RANKING LIST TO STATE AND DB BEFORE EXECUTING TRADES!
+        self.ranked_opportunities = ranked_list
+        self.last_ranking_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        save_rankings(ranked_list)
+
+        log_event("SUCCESS", f"Full scan ranked {len(ranked_list)} qualified opportunities across universe. Published ranking list to frontend before trade execution. Leaderboard: " + " | ".join(leaderboard_items))
+
+        # PHASE 3: Prioritized Execution for Candidates Marked SELECTED_FOR_BUY
         trades_opened = 0
-        for rank_idx, candidate in enumerate(qualifying_candidates, 1):
+        for rank_item in ranked_list:
+            if rank_item.get("status") != "SELECTED_FOR_BUY":
+                continue
+
             strategy_type, strat_reason = RiskManager.determine_next_strategy()
             if not strategy_type:
                 log_event("INFO", f"Strategy capacity reached: {strat_reason}")
                 break
 
-            stock = candidate["stock"]
-            symbol = candidate["symbol"]
-            rank_score = candidate["rank_score"]
-            breakdown = candidate["breakdown"]
+            stock = rank_item["stock"]
+            symbol = rank_item["symbol"]
+            rank_score = rank_item["rank_score"]
+            breakdown = rank_item["breakdown"]
 
             # Re-check active open symbols to avoid concurrent race conditions
             current_open = {p["symbol"] for p in get_open_positions()}
             if symbol in current_open:
+                rank_item["status"] = "BOUGHT"
                 continue
 
             price = float(stock.get("price") or stock.get("currentPrice") or 0.0)
@@ -473,20 +551,24 @@ class BotRunner:
                     "invested_amount": invested,
                     "days_at_100_dema": 0,
                     "entry_date": datetime.now(IST).strftime("%Y-%m-%d"),
+                    "last_tranche_time": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
                     "rank_score": rank_score
                 }
                 save_open_position(pos)
 
                 hr_note = f"+{breakdown['headroom_pct']:.1f}%" if breakdown.get("headroom_pct") else "N/A"
-                trade_note = f"A/B [{strategy_type}] (Rank #{rank_idx} Score: {rank_score:.1f}, {breakdown['mcap_tier']}, Room: {hr_note}): {candidate['reason']}"
+                trade_note = f"A/B [{strategy_type}] (Rank #{rank_item['rank']} Score: {rank_score:.1f}, {breakdown['mcap_tier']}, Room: {hr_note}): {rank_item['action_reason']}"
                 record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type)
 
                 state = get_bot_state()
                 new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)
                 update_bot_state(available_cash=new_cash)
 
+                rank_item["status"] = "BOUGHT"
+                save_rankings(self.ranked_opportunities)
+
                 strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
-                log_event("SUCCESS", f"Opened new [{strat_label}] in #{rank_idx}-Ranked {symbol} (Rank Score: {rank_score:.1f}, Tier: {breakdown['mcap_tier']}, Headroom: {hr_note}, RSI: {breakdown.get('rsi')}): {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
+                log_event("SUCCESS", f"Opened new [{strat_label}] in #{rank_item['rank']}-Ranked {symbol} (Rank Score: {rank_score:.1f}, Tier: {breakdown['mcap_tier']}, Headroom: {hr_note}, RSI: {breakdown.get('rsi')}): {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
                 trades_opened += 1
 
     def compute_performance_matrix(self):
@@ -646,7 +728,9 @@ class BotRunner:
             "positions": enriched_positions,
             "trades": trades,
             "logs": logs,
-            "performanceMatrix": perf_matrix
+            "performanceMatrix": perf_matrix,
+            "rankingList": self.ranked_opportunities or get_rankings(limit=100),
+            "lastRankingTime": self.last_ranking_time
         }
 
 # Global singleton runner instance
