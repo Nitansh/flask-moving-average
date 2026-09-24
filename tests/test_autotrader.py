@@ -513,5 +513,21 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
     # MUST have selected RELIANCE (top-ranked), not LOWRANK (first candidate in list)
     assert open_pos[0]["symbol"] == "RELIANCE"
 
+def test_fetch_live_scan_candidates_blocks_while_scanning(monkeypatch):
+    """When moving-average scanner reports isScanning=True, candidate fetch must return empty to avoid partial trading."""
+    from auto_trader.bot_runner import bot_runner
+    import requests
+
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {"isScanning": True, "processedCount": 120, "totalStocks": 2246}
+
+    monkeypatch.setattr(requests, "get", lambda url, timeout=None: MockResponse())
+    candidates, source = bot_runner.fetch_live_scan_candidates()
+    assert candidates == []
+    assert "scan in progress" in source
+
+
 
 

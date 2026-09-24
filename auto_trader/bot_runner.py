@@ -226,19 +226,35 @@ class BotRunner:
         3. Fallback: Internal live technical scan of top liquid Nifty stocks
         Returns: (candidates_list, source_description)
         """
-        # 1. Try Node.js in-memory live scan API
+        # 1. Check Node.js scan status first - DO NOT trade if scan is in progress!
         for port in [3000, 8080]:
             try:
                 import requests
-                resp = requests.get(f"http://127.0.0.1:{port}/api/full-list", timeout=1.5)
-                if resp.status_code == 200:
-                    stocks = resp.json()
-                    if isinstance(stocks, list) and len(stocks) > 0:
-                        return stocks, f"Node.js live scan cache (port {port}, {len(stocks)} stocks)"
+                status_resp = requests.get(f"http://127.0.0.1:{port}/api/scan/status", timeout=2.5)
+                if status_resp.status_code == 200:
+                    status_data = status_resp.json()
+                    if status_data.get("isScanning"):
+                        processed = status_data.get("processedCount", 0)
+                        total = status_data.get("totalStocks", 0)
+                        log_event("INFO", f"Moving-average scan is currently in progress ({processed}/{total} stocks). Awaiting 100% completion before ranking and trading.")
+                        return [], f"moving-average scan in progress ({processed}/{total})"
             except Exception:
                 pass
 
-        # 2. Try SQLite DB scan_results table in movingAverage/auth.db
+        # 2. Fetch completed scan results from Node.js in-memory live scan API
+        for port in [3000, 8080]:
+            for endpoint in ["/api/scan/results", "/api/full-list"]:
+                try:
+                    import requests
+                    resp = requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=10.0)
+                    if resp.status_code == 200:
+                        stocks = resp.json()
+                        if isinstance(stocks, list) and len(stocks) > 0:
+                            return stocks, f"Node.js live scan cache (port {port}{endpoint}, {len(stocks)} stocks)"
+                except Exception:
+                    pass
+
+        # 3. Try SQLite DB scan_results table in movingAverage/auth.db
         possible_db_paths = [
             os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "movingAverage", "auth.db")),
             os.path.abspath("c:/moving-average/movingAverage/auth.db"),
@@ -247,7 +263,7 @@ class BotRunner:
         for db_path in possible_db_paths:
             if os.path.exists(db_path):
                 try:
-                    conn = sqlite3.connect(db_path, timeout=2.0)
+                    conn = sqlite3.connect(db_path, timeout=5.0)
                     cursor = conn.cursor()
                     cursor.execute("SELECT data FROM scan_results")
                     rows = cursor.fetchall()
@@ -265,24 +281,32 @@ class BotRunner:
                 except Exception:
                     pass
 
-        # 3. Fallback: Top liquid Nifty universe evaluated using historical cache / Yahoo Finance
+        # 4. Fallback: Full Nifty universe evaluated using historical cache / Yahoo Finance
         try:
             from app import custom_stock_df, MCAP
             from finta import TA
             import pandas as pd
+            import csv
 
-            sample_universe = [
-                "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "SBIN",
-                "LTIM", "TATAMOTORS", "LT", "ITC", "KOTAKBANK", "TITAN", "BAJFINANCE",
-                "MARUTI", "SUNPHARMA", "ASIANPAINT", "NTPC", "ONGC", "POWERGRID",
-                "TRENT", "BEL", "HAL", "COALINDIA", "BAJAJFINSV", "NESTLEIND", "ULTRACEMCO"
-            ]
+            csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "nifty500.csv"))
+            universe_symbols = []
+            if os.path.exists(csv_path):
+                with open(csv_path, mode='r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  # skip header
+                    for row in reader:
+                        if len(row) >= 3 and row[2].strip():
+                            universe_symbols.append(row[2].strip().upper())
+
+            if not universe_symbols:
+                universe_symbols = list(MCAP.keys())[:100]
+
             today = datetime.now(IST).date()
             from_date = today - timedelta(days=365)
             to_date = today + timedelta(days=1)
 
             scanned = []
-            for sym in sample_universe:
+            for sym in universe_symbols:
                 try:
                     df = custom_stock_df(symbol=sym, from_date=from_date, to_date=to_date, series="EQ")
                     if df is not None and not df.empty and len(df) >= 50:
@@ -308,7 +332,7 @@ class BotRunner:
                 except Exception:
                     continue
             if scanned:
-                return scanned, f"Internal Live Market Scanner ({len(scanned)} liquid Nifty stocks)"
+                return scanned, f"Internal Live Market Scanner ({len(scanned)} Nifty universe stocks)"
         except Exception:
             pass
 
