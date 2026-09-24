@@ -403,4 +403,115 @@ def test_bot_reset():
     assert state["available_cash"] == 2000000.0
     assert state["total_capital"] == 2000000.0
 
+def test_calculate_rank_score_mcap_tiers():
+    """Validates market cap tier scoring: Largecap (25) > Midcap (18) > Smallcap (8)."""
+    large_stock = {
+        "symbol": "RELIANCE",
+        "price": 2500.0,
+        "DMA_20": 2400.0,
+        "DMA_50": 2300.0,
+        "DMA_100": 2750.0,
+        "rsi": 50.0,
+        "volume": 2000000,
+        "marketType": "Large Cap"
+    }
+    mid_stock = {
+        "symbol": "ACC",
+        "price": 2500.0,
+        "DMA_20": 2400.0,
+        "DMA_50": 2300.0,
+        "DMA_100": 2750.0,
+        "rsi": 50.0,
+        "volume": 2000000,
+        "marketType": "Mid Cap"
+    }
+    small_stock = {
+        "symbol": "TINYCO",
+        "price": 2500.0,
+        "DMA_20": 2400.0,
+        "DMA_50": 2300.0,
+        "DMA_100": 2750.0,
+        "rsi": 50.0,
+        "volume": 2000000,
+        "marketType": "Small Cap"
+    }
+
+    large_score, large_b = StrategyEngine.calculate_rank_score(large_stock)
+    mid_score, mid_b = StrategyEngine.calculate_rank_score(mid_stock)
+    small_score, small_b = StrategyEngine.calculate_rank_score(small_stock)
+
+    assert large_b["mcap_score"] == 25.0
+    assert mid_b["mcap_score"] == 18.0
+    assert small_b["mcap_score"] == 8.0
+    assert large_score > mid_score > small_score
+
+def test_calculate_rank_score_rsi_and_volume():
+    """RSI sweet spot (48-55) and high volume (>= 1M) should get maximum points."""
+    sweet_spot = {
+        "symbol": "TCS",
+        "price": 3500.0,
+        "DMA_20": 3400.0,
+        "DMA_50": 3300.0,
+        "DMA_100": 3900.0,
+        "rsi": 52.0,
+        "volume": 1500000
+    }
+    score, b = StrategyEngine.calculate_rank_score(sweet_spot)
+    assert b["rsi_score"] == 20.0
+    assert b["volume_score"] == 20.0
+    assert b["mcap_score"] == 25.0  # TCS is in LARGECAP_SYMBOLS
+
+def test_scan_and_enter_prioritizes_top_ranked_candidate():
+    """Bot must scan all candidates first and pick the highest-ranked stock, not the first element in the list."""
+    from auto_trader.bot_runner import bot_runner
+    from auto_trader.db import get_open_positions
+
+    # Limit max positions to 1 to test prioritization
+    update_bot_state(max_positions=1)
+
+    candidates = [
+        # Candidate 0: Low-ranked Smallcap (lower headroom, low volume, sub-optimal RSI)
+        {
+            "symbol": "LOWRANK",
+            "price": 100.0,
+            "DMA_20": 98.0,
+            "DMA_50": 95.0,
+            "DMA_100": 104.5, # +4.5% headroom (barely above 4%)
+            "rsi": 65.0,
+            "volume": 20000,
+            "marketType": "Small Cap"
+        },
+        # Candidate 1: High-ranked Largecap (high headroom, high volume, optimal RSI)
+        {
+            "symbol": "RELIANCE",
+            "price": 2500.0,
+            "DMA_20": 2400.0,
+            "DMA_50": 2300.0,
+            "DMA_100": 2850.0, # +14.0% headroom
+            "rsi": 51.0,
+            "volume": 3000000,
+            "marketType": "Large Cap"
+        },
+        # Candidate 2: Mid-ranked Midcap
+        {
+            "symbol": "MIDRANK",
+            "price": 500.0,
+            "DMA_20": 480.0,
+            "DMA_50": 460.0,
+            "DMA_100": 535.0, # +7.0% headroom
+            "rsi": 56.0,
+            "volume": 400000,
+            "marketType": "Mid Cap"
+        }
+    ]
+
+    # Run scan_and_enter with candidates
+    bot_runner._scan_and_enter(candidates)
+
+    open_pos = get_open_positions()
+    assert len(open_pos) == 1
+    # MUST have selected RELIANCE (top-ranked), not LOWRANK (first candidate in list)
+    assert open_pos[0]["symbol"] == "RELIANCE"
+
+
 

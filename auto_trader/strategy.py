@@ -86,6 +86,171 @@ class StrategyEngine:
 
         return True, "Strong momentum setup with favorable risk-to-reward"
 
+    # Prominent NIFTY 100 Largecap constituents
+    LARGECAP_SYMBOLS = {
+        "RELIANCE", "TCS", "HDFCBANK", "BHARTIARTL", "ICICIBANK", "INFY", "SBIN", "LICI",
+        "ITC", "HINDUNILVR", "LT", "BAJFINANCE", "HCLTECH", "MARUTI", "SUNPHARMA", "ADANIENT",
+        "KOTAKBANK", "TITAN", "ONGC", "TATAMOTORS", "NTPC", "AXISBANK", "DMART", "ADANIPORTS",
+        "POWERGRID", "COALINDIA", "BAJAJFINSV", "ULTRACEMCO", "SIEMENS", "ASIANPAINT", "BEL",
+        "HAL", "NESTLEIND", "IOC", "DLF", "VBL", "ZOMATO", "GRASIM", "JSWSTEEL", "TRENT",
+        "IRFC", "VEDL", "PFC", "RECLTD", "TECHM", "ADANIPOWER", "HINDALCO", "INDUSINDBK",
+        "CHOLAFIN", "TATASTEEL", "JIOFIN", "MOTHERSON", "EICHERMOT", "BPCL", "GODREJCP",
+        "DIVISLAB", "SHRIRAMFIN", "BAJAJ-AUTO", "TORNTPHARM", "ABB", "BRITANNIA", "GAIL",
+        "CIPLA", "HAVELLS", "INDIGO", "TATACONSUM", "AMBUJACEM", "UNITDSPR", "PIDILITIND",
+        "DABUR", "MAXHEALTH", "BANKBARODA", "PNB", "LTIM", "POLYCAB", "CANBK", "BOSCHLTD",
+        "SHREECEM", "CGPOWER", "TVSMOTOR", "ICICIPRULI", "HEROMOTOCO", "ICICIGI", "COLPAL",
+        "APOLLOHOSP", "BERGEPAINT", "MARICO", "DRREDDY", "SRF", "NAUKRI", "LUPIN", "AUROPHARMA",
+        "IOB", "SBILIFE", "HDFCLIFE", "JSWENERGY", "CUMMINSIND", "PERSISTENT"
+    }
+
+    # Prominent NIFTY Midcap 150 constituents
+    MIDCAP_SYMBOLS = {
+        "ACC", "AUBANK", "FEDERALBNK", "IDFCFIRSTB", "YESBANK", "BANDHANBNK", "CONCOR",
+        "PETRONET", "SAIL", "NMDC", "VOLTAS", "MUTHOOTFIN", "ASHOKLEY", "BALKRISIND", "ASTRAL",
+        "DEEPAKNTR", "ESCORTS", "EXIDEIND", "GLAND", "GLENMARK", "GMRINFRA", "GUJGASLTD",
+        "HINDPETRO", "IPCALAB", "JUBLFOOD", "LICHSGFIN", "L&TFH", "MFSL", "MPHASIS",
+        "OBEROIRLTY", "PAGEIND", "PEL", "PRESTIGE", "RAMCOCEM", "STARHEALTH", "SUNTV",
+        "SYNGENE", "TATACHEM", "TATAPOWER", "TORNTPOWER", "UBL", "M&MFIN", "METROPOLIS",
+        "NATIONALUM", "NAVINFLUOR", "PAYTM", "QUESS", "RADICO", "SUZLON", "DIXON",
+        "BHEL", "KALYANKJIL", "SUPREMEIND", "PHOENIXLTD", "KPITTECH", "COFORGE", "FORTIS",
+        "GLAXO", "KIMS", "LALPATHLAB", "APARINDS", "AARTIIND", "ABCAPITAL", "ABFRL", "ANGELONE"
+    }
+
+    @classmethod
+    def get_market_cap_tier(cls, stock_data):
+        """Categorizes stock into LARGECAP, MIDCAP, or SMALLCAP with associated score."""
+        symbol = str(stock_data.get("symbol") or "").upper().replace("-EQ", "").strip()
+        market_type = str(stock_data.get("marketType") or stock_data.get("marketCap") or "").strip().lower()
+
+        if "large" in market_type:
+            return "LARGECAP", 25.0
+        if "mid" in market_type:
+            return "MIDCAP", 18.0
+        if "small" in market_type:
+            return "SMALLCAP", 8.0
+
+        # Check numerical MCAP
+        mcap = stock_data.get("mcap")
+        if mcap is not None:
+            try:
+                mcap_clean = str(mcap).replace(",", "").strip()
+                mcap_val = float(mcap_clean)
+                if mcap_val > 1e8:  # Raw rupees to Crores conversion
+                    mcap_val = mcap_val / 1e7
+                if mcap_val > 20000.0:
+                    return "LARGECAP", 25.0
+                elif mcap_val > 5000.0:
+                    return "MIDCAP", 18.0
+                elif mcap_val > 0.0:
+                    return "SMALLCAP", 8.0
+            except (ValueError, TypeError):
+                pass
+
+        if symbol in cls.LARGECAP_SYMBOLS:
+            return "LARGECAP", 25.0
+        if symbol in cls.MIDCAP_SYMBOLS:
+            return "MIDCAP", 18.0
+
+        return "SMALLCAP", 8.0
+
+    @staticmethod
+    def _extract_volume(stock_data):
+        """Extracts numerical volume safely."""
+        for k in ("volume", "vol", "VOLUME", "totalTradedVolume"):
+            val = stock_data.get(k)
+            if val is not None and val != "":
+                try:
+                    return float(str(val).replace(",", "").strip())
+                except (ValueError, TypeError):
+                    pass
+        return 0.0
+
+    @classmethod
+    def calculate_rank_score(cls, stock_data):
+        """
+        Calculates a multi-factor ranking score (0 to 100) for prioritizing trade entries:
+        1. Headroom / Maximum Profit Potential (35 pts): Room from current price to 100 DEMA.
+        2. Market Cap Tier (25 pts): Largecap (25 pts) > Midcap (18 pts) > Smallcap (8 pts).
+        3. RSI Sweet Spot (20 pts): Fresh breakout / momentum zone (48-55 optimal).
+        4. Volume / Liquidity (20 pts): High liquidity ensures clean execution without slippage.
+
+        Returns:
+            (total_score, breakdown_dict)
+        """
+        price, dema_20, dema_50, dema_100, dema_200, rsi = cls._extract_stock_values(stock_data)
+
+        # 1. Headroom / Profit Potential (35 pts)
+        headroom_pct = 0.0
+        if dema_100 and dema_100 > price and price > 0:
+            headroom_pct = ((dema_100 - price) / price) * 100.0
+            if headroom_pct >= 12.0:
+                headroom_score = 35.0
+            elif headroom_pct >= 8.0:
+                headroom_score = 25.0 + ((headroom_pct - 8.0) / 4.0) * 10.0
+            elif headroom_pct >= 4.0:
+                headroom_score = 15.0 + ((headroom_pct - 4.0) / 4.0) * 10.0
+            else:
+                headroom_score = max(5.0, (headroom_pct / 4.0) * 15.0)
+        elif dema_200 and dema_200 > price and price > 0:
+            # Stage 2 breakout targeting 200 DEMA
+            headroom_pct = ((dema_200 - price) / price) * 100.0
+            if headroom_pct >= 10.0:
+                headroom_score = 30.0
+            elif headroom_pct >= 5.0:
+                headroom_score = 22.0
+            else:
+                headroom_score = 14.0
+        else:
+            headroom_pct = 0.0
+            headroom_score = 10.0
+
+        # 2. Market Cap Tier (25 pts)
+        mcap_tier, mcap_score = cls.get_market_cap_tier(stock_data)
+
+        # 3. RSI Sweet Spot (20 pts)
+        # Fresh breakouts in 48-55 zone have the highest continuation runway
+        if not rsi or rsi <= 0:
+            rsi_score = 12.0
+        elif 48.0 <= rsi <= 55.0:
+            rsi_score = 20.0
+        elif 55.0 < rsi <= 60.0:
+            rsi_score = 16.0
+        elif 42.0 <= rsi < 48.0:
+            rsi_score = 12.0
+        elif 60.0 < rsi <= 68.0:
+            rsi_score = 8.0
+        else:
+            rsi_score = 4.0
+
+        # 4. Volume / Liquidity (20 pts)
+        vol = cls._extract_volume(stock_data)
+        if vol >= 1_000_000:
+            vol_score = 20.0
+        elif vol >= 500_000:
+            vol_score = 15.0
+        elif vol >= 100_000:
+            vol_score = 10.0
+        elif vol > 0:
+            vol_score = 6.0
+        else:
+            vol_score = 8.0
+
+        total_score = round(headroom_score + mcap_score + rsi_score + vol_score, 1)
+
+        breakdown = {
+            "total_score": total_score,
+            "headroom_pct": round(headroom_pct, 2),
+            "headroom_score": round(headroom_score, 1),
+            "mcap_tier": mcap_tier,
+            "mcap_score": round(mcap_score, 1),
+            "rsi": round(rsi, 1) if rsi else None,
+            "rsi_score": round(rsi_score, 1),
+            "volume": int(vol),
+            "volume_score": round(vol_score, 1)
+        }
+
+        return total_score, breakdown
+
     @staticmethod
     def evaluate_scale_in(position, current_price, current_dema, rsi=None):
         """

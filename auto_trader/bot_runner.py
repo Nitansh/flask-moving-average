@@ -302,6 +302,7 @@ class BotRunner:
                             "DMA_100": d100,
                             "DMA_200": d200,
                             "rsi": rsi_val,
+                            "volume": int(df.iloc[-1]['VOLUME']) if ('VOLUME' in df.columns and not pd.isna(df.iloc[-1]['VOLUME'])) else 0,
                             "mcap": MCAP.get(sym, 50000)
                         })
                 except Exception:
@@ -314,7 +315,13 @@ class BotRunner:
         return [], "No live scan source available"
 
     def _scan_and_enter(self, candidate_stocks=None):
-        """Scans candidate stocks meeting strategy criteria and places BUY order (Tranche vs One-Shot)."""
+        """
+        Full-Scan-First Multi-Factor Ranking Engine:
+        1. Evaluates ALL candidates across the scan universe first before opening any trades.
+        2. Ranks passing candidates by composite score (Headroom 35%, Market Cap 25%, RSI 20%, Volume 20%).
+        3. Logs the top opportunities leaderboard for full transparency.
+        4. Prioritizes buying the highest-ranked candidates first up to portfolio capacity.
+        """
         source_label = "GUI payload"
         stocks_to_scan = candidate_stocks or []
 
@@ -325,76 +332,114 @@ class BotRunner:
             log_event("WARNING", "Live scan feed is currently empty. Start the moving-average scanner or provide candidate stocks.")
             return
 
-        log_event("INFO", f"Live scan feed: Evaluating {len(stocks_to_scan)} candidate stocks from {source_label}.")
+        log_event("INFO", f"Live scan feed: Initiating full scan across {len(stocks_to_scan)} candidate stocks from {source_label}.")
 
-        trades_opened = 0
+        # PHASE 1: Full Candidate Evaluation Scan
+        open_symbols = {p["symbol"] for p in get_open_positions()}
+        qualifying_candidates = []
         rejection_samples = []
 
         for stock in stocks_to_scan:
-            strategy_type, strat_reason = RiskManager.determine_next_strategy()
-            if not strategy_type:
-                log_event("INFO", f"Strategy capacity reached: {strat_reason}")
-                break
-
             symbol = stock.get("symbol")
             if not symbol:
                 continue
 
-            # Don't buy if already holding
-            open_symbols = [p["symbol"] for p in get_open_positions()]
+            # Skip stocks already held in open positions
             if symbol in open_symbols:
                 continue
 
             is_valid, reason = StrategyEngine.evaluate_entry(stock)
             if is_valid:
-                price = float(stock.get("price") or stock.get("currentPrice") or 0.0)
-                qty = RiskManager.calculate_position_size(price, strategy_type=strategy_type)
-                if qty <= 0:
-                    continue
-
-                order_res = self.client.place_buy_order(symbol, qty, price)
-                if order_res.get("status") == "SUCCESS":
-                    exec_price = float(order_res.get("executed_price", price))
-                    stop_loss = round(exec_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
-                    invested = round(qty * exec_price, 2)
-
-                    pos = {
-                        "symbol": symbol,
-                        "strategy_type": strategy_type,
-                        "initial_qty": qty,
-                        "current_qty": qty,
-                        "buy_price": exec_price,
-                        "current_price": exec_price,
-                        "stop_loss": stop_loss,
-                        "dema_100": stock.get("DMA_100") or stock.get("dema_100"),
-                        "dema_200": stock.get("DMA_200") or stock.get("dema_200"),
-                        "dema_20": stock.get("DMA_20") or stock.get("dema_20"),
-                        "dema_50": stock.get("DMA_50") or stock.get("dema_50"),
-                        "phase": "ENTRY",
-                        "tranches_count": 1,
-                        "invested_amount": invested,
-                        "days_at_100_dema": 0,
-                        "entry_date": datetime.now(IST).strftime("%Y-%m-%d")
-                    }
-                    save_open_position(pos)
-                    
-                    trade_note = f"A/B [{strategy_type}]: {reason}"
-                    record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type)
-
-                    state = get_bot_state()
-                    new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)
-                    update_bot_state(available_cash=new_cash)
-                    
-                    strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
-                    log_event("SUCCESS", f"Opened new [{strat_label}] in {symbol}: {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
-                    trades_opened += 1
+                rank_score, breakdown = StrategyEngine.calculate_rank_score(stock)
+                qualifying_candidates.append({
+                    "stock": stock,
+                    "symbol": symbol,
+                    "reason": reason,
+                    "rank_score": rank_score,
+                    "breakdown": breakdown
+                })
             else:
-                if len(rejection_samples) < 3:
+                if len(rejection_samples) < 4:
                     rejection_samples.append(f"{symbol}: {reason}")
 
-        if trades_opened == 0:
+        if not qualifying_candidates:
             sample_txt = " | ".join(rejection_samples) if rejection_samples else "all evaluated"
-            log_event("INFO", f"Scan cycle finished: Evaluated {len(stocks_to_scan)} stocks. 0 met entry criteria. Examples: {sample_txt}")
+            log_event("INFO", f"Full scan complete: Evaluated {len(stocks_to_scan)} stocks. 0 met entry criteria. Examples: {sample_txt}")
+            return
+
+        # PHASE 2: Multi-Factor Ranking & Leaderboard Prioritization
+        qualifying_candidates.sort(key=lambda c: c["rank_score"], reverse=True)
+
+        leaderboard_items = []
+        for idx, c in enumerate(qualifying_candidates[:5], 1):
+            b = c["breakdown"]
+            hr_str = f"+{b['headroom_pct']:.1f}%" if b['headroom_pct'] else "N/A"
+            rsi_str = f"{b['rsi']:.1f}" if b['rsi'] else "N/A"
+            leaderboard_items.append(f"#{idx} {c['symbol']} ({b['total_score']} pts | {b['mcap_tier']} | Room: {hr_str} | RSI: {rsi_str})")
+
+        log_event("INFO", f"Full scan ranked {len(qualifying_candidates)} qualified opportunities. Leaderboard: " + " | ".join(leaderboard_items))
+
+        # PHASE 3: Prioritized Execution for Highest-Ranked Candidates First
+        trades_opened = 0
+        for rank_idx, candidate in enumerate(qualifying_candidates, 1):
+            strategy_type, strat_reason = RiskManager.determine_next_strategy()
+            if not strategy_type:
+                log_event("INFO", f"Strategy capacity reached: {strat_reason}")
+                break
+
+            stock = candidate["stock"]
+            symbol = candidate["symbol"]
+            rank_score = candidate["rank_score"]
+            breakdown = candidate["breakdown"]
+
+            # Re-check active open symbols to avoid concurrent race conditions
+            current_open = {p["symbol"] for p in get_open_positions()}
+            if symbol in current_open:
+                continue
+
+            price = float(stock.get("price") or stock.get("currentPrice") or 0.0)
+            qty = RiskManager.calculate_position_size(price, strategy_type=strategy_type)
+            if qty <= 0:
+                continue
+
+            order_res = self.client.place_buy_order(symbol, qty, price)
+            if order_res.get("status") == "SUCCESS":
+                exec_price = float(order_res.get("executed_price", price))
+                stop_loss = round(exec_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
+                invested = round(qty * exec_price, 2)
+
+                pos = {
+                    "symbol": symbol,
+                    "strategy_type": strategy_type,
+                    "initial_qty": qty,
+                    "current_qty": qty,
+                    "buy_price": exec_price,
+                    "current_price": exec_price,
+                    "stop_loss": stop_loss,
+                    "dema_100": stock.get("DMA_100") or stock.get("dema_100"),
+                    "dema_200": stock.get("DMA_200") or stock.get("dema_200"),
+                    "dema_20": stock.get("DMA_20") or stock.get("dema_20"),
+                    "dema_50": stock.get("DMA_50") or stock.get("dema_50"),
+                    "phase": "ENTRY",
+                    "tranches_count": 1,
+                    "invested_amount": invested,
+                    "days_at_100_dema": 0,
+                    "entry_date": datetime.now(IST).strftime("%Y-%m-%d"),
+                    "rank_score": rank_score
+                }
+                save_open_position(pos)
+
+                hr_note = f"+{breakdown['headroom_pct']:.1f}%" if breakdown.get("headroom_pct") else "N/A"
+                trade_note = f"A/B [{strategy_type}] (Rank #{rank_idx} Score: {rank_score:.1f}, {breakdown['mcap_tier']}, Room: {hr_note}): {candidate['reason']}"
+                record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type)
+
+                state = get_bot_state()
+                new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)
+                update_bot_state(available_cash=new_cash)
+
+                strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
+                log_event("SUCCESS", f"Opened new [{strat_label}] in #{rank_idx}-Ranked {symbol} (Rank Score: {rank_score:.1f}, Tier: {breakdown['mcap_tier']}, Headroom: {hr_note}, RSI: {breakdown.get('rsi')}): {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
+                trades_opened += 1
 
     def compute_performance_matrix(self):
         """
