@@ -253,3 +253,29 @@ def get_recent_logs(limit=100):
     conn = get_connection()
     rows = conn.execute("SELECT * FROM bot_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
+
+def reset_autotrader(initial_capital=2000000.0):
+    """
+    Resets the Auto-Trader database to pristine initial testing state:
+    - Clears all open positions
+    - Clears all completed trades
+    - Clears all audit logs
+    - Resets bot state: available_cash = initial_capital, total_capital = initial_capital, is_running = 0
+    """
+    conn = get_connection()
+    with conn:
+        conn.execute("DELETE FROM bot_positions")
+        conn.execute("DELETE FROM bot_trades")
+        conn.execute("DELETE FROM bot_logs")
+        conn.execute("""
+            UPDATE bot_state
+            SET is_running = 0,
+                available_cash = ?,
+                total_capital = ?,
+                updated_at = ?
+            WHERE id = 1
+        """, (float(initial_capital), float(initial_capital), datetime.now(timezone.utc).isoformat()))
+
+    log_event("INFO", "Auto-Trader reset to initial testing state.", {"initial_capital": float(initial_capital)})
+    return True
+

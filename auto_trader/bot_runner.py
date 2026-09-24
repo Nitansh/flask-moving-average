@@ -13,7 +13,8 @@ import pytz
 from .config import BotConfig
 from .db import (
     get_bot_state, update_bot_state, get_open_positions, save_open_position,
-    delete_open_position, record_trade, log_event, get_trades, get_recent_logs
+    delete_open_position, record_trade, log_event, get_trades, get_recent_logs,
+    reset_autotrader
 )
 from .kite_client import KiteTraderClient
 from .risk_manager import RiskManager
@@ -59,6 +60,13 @@ class BotRunner:
             update_bot_state(is_running=0)
             log_event("INFO", "Auto-Trader stopped by user.")
             return True, "Auto-Trader stopped"
+
+    def reset(self, initial_capital=2000000.0):
+        with self.lock:
+            self.stop_requested = True
+            reset_autotrader(initial_capital=initial_capital)
+            self.last_scan_time = None
+            return True, "Auto-Trader reset to initial testing state."
 
     def _run_loop(self):
         """Continuous background loop running during market hours."""
@@ -434,10 +442,11 @@ class BotRunner:
                 "activePositions": len(strat_positions),
                 "maxSlots": 4,
                 "capitalInvested": round(active_invested, 2),
+                "investedCapital": round(active_invested, 2),
                 "totalCompletedTrades": total_trades_count,
                 "winningTrades": win_count,
                 "losingTrades": loss_count,
-                "winRatePct": win_rate,
+                "winRatePct": win_rate or 0.0,
                 "grossPnl": round(gross_pnl, 2),
                 "totalCharges": round(total_charges, 2),
                 "realizedPnl": round(realized_pnl, 2),
@@ -445,10 +454,10 @@ class BotRunner:
                 "netPnl": round(net_pnl, 2),
                 "grossProfit": round(gross_profit, 2),
                 "grossLoss": round(gross_loss, 2),
-                "profitFactor": profit_factor,
-                "avgReturnPct": avg_return_pct,
-                "bestTradePnl": round(best_trade, 2),
-                "worstTradePnl": round(worst_trade, 2)
+                "profitFactor": profit_factor or 0.0,
+                "avgReturnPct": avg_return_pct or 0.0,
+                "bestTradePnl": round(best_trade, 2) if best_trade is not None else 0.0,
+                "worstTradePnl": round(worst_trade, 2) if worst_trade is not None else 0.0
             }
 
         tranche_metrics = analyze_strategy("TRANCHE_AVERAGING")

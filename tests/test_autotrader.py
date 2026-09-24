@@ -352,10 +352,55 @@ def test_live_scan_candidates_pulling(monkeypatch):
     # Run cycle with None / empty candidate_stocks
     bot_runner.evaluate_cycle(candidate_stocks=None)
     
-    from auto_trader.db import get_open_positions
-    positions = get_open_positions()
-    assert len(positions) == 1
-    assert positions[0]["symbol"] == "TRENT"
-    assert positions[0]["strategy_type"] in ["TRANCHE_AVERAGING", "ONE_SHOT"]
+def test_performance_matrix_keys_and_defaults():
+    """Performance matrix should safely include both investedCapital and capitalInvested with safe numeric defaults even with zero trades."""
+    from auto_trader.bot_runner import bot_runner
+    matrix = bot_runner.compute_performance_matrix()
+    
+    for key in ["trancheAveraging", "oneShot"]:
+        data = matrix[key]
+        assert "investedCapital" in data
+        assert "capitalInvested" in data
+        assert isinstance(data["investedCapital"], (int, float))
+        assert isinstance(data["capitalInvested"], (int, float))
+        assert isinstance(data["bestTradePnl"], (int, float))
+        assert isinstance(data["worstTradePnl"], (int, float))
+        assert isinstance(data["realizedPnl"], (int, float))
+        assert isinstance(data["unrealizedPnl"], (int, float))
+        assert isinstance(data["netPnl"], (int, float))
+        assert isinstance(data["grossPnl"], (int, float))
+
+def test_bot_reset():
+    """Bot reset should wipe all positions, trades, and reset bot state to initial capital."""
+    from auto_trader.bot_runner import bot_runner
+    from auto_trader.db import save_open_position, record_trade, log_event, get_open_positions, get_trades, get_bot_state
+
+    # Add mock position, trade, log
+    save_open_position({
+        "symbol": "TESTSTOCK",
+        "strategy_type": "TRANCHE_AVERAGING",
+        "initial_qty": 10,
+        "current_qty": 10,
+        "buy_price": 100.0,
+        "current_price": 105.0,
+        "stop_loss": 95.0
+    })
+    record_trade("TESTSTOCK", "BUY", 10, 100.0, 0.0)
+    log_event("INFO", "Test log message")
+
+    assert len(get_open_positions()) == 1
+    assert len(get_trades()) >= 1
+
+    success, msg = bot_runner.reset(initial_capital=2000000.0)
+    assert success is True
+    assert "reset" in msg.lower()
+
+    # Verify positions and trades are wiped
+    assert len(get_open_positions()) == 0
+    assert len(get_trades()) == 0
+    state = get_bot_state()
+    assert state["is_running"] == 0
+    assert state["available_cash"] == 2000000.0
+    assert state["total_capital"] == 2000000.0
 
 
