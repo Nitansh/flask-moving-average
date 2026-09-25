@@ -142,6 +142,9 @@ class BotRunner:
             pos["current_price"] = live_price
             save_open_position(pos)
 
+            from .market_context import extract_indicators_dict
+            ind_dict = extract_indicators_dict(stock_or_pos=pos, dema_data=dema_data)
+
             eval_res = StrategyEngine.evaluate_exit(pos, live_price, dema_data)
             action = eval_res.get("action", "NONE")
 
@@ -153,7 +156,7 @@ class BotRunner:
                     pnl = (live_price - pos["buy_price"]) * sell_qty
                     pnl_pct = ((live_price - pos["buy_price"]) / pos["buy_price"]) * 100.0
                     strat_type = pos.get("strategy_type", "TRANCHE_AVERAGING")
-                    record_trade(symbol, "PARTIAL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type)
+                    record_trade(symbol, "PARTIAL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type, indicators=ind_dict)
                     
                     # Update position and available cash
                     pos["current_qty"] -= sell_qty
@@ -172,7 +175,7 @@ class BotRunner:
                     pnl = (live_price - pos["buy_price"]) * sell_qty
                     pnl_pct = ((live_price - pos["buy_price"]) / pos["buy_price"]) * 100.0
                     strat_type = pos.get("strategy_type", "TRANCHE_AVERAGING")
-                    record_trade(symbol, "FULL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type)
+                    record_trade(symbol, "FULL_SELL", sell_qty, pos["buy_price"], live_price, pnl, pnl_pct, eval_res.get("reason"), strategy_type=strat_type, indicators=ind_dict)
 
                     delete_open_position(symbol)
                     state = get_bot_state()
@@ -231,7 +234,7 @@ class BotRunner:
                                     pos["stop_loss"] = round(new_avg_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
 
                                     save_open_position(pos)
-                                    record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}", strategy_type="TRANCHE_AVERAGING")
+                                    record_trade(symbol, "BUY_TRANCHE", add_qty, exec_price, 0.0, 0.0, 0.0, f"Tranche #{new_tranches}: {scale_reason}", strategy_type="TRANCHE_AVERAGING", indicators=ind_dict)
 
                                     state = get_bot_state()
                                     update_bot_state(available_cash=max(0.0, state.get("available_cash", 0) - add_cost))
@@ -552,6 +555,9 @@ class BotRunner:
                 stop_loss = round(exec_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0)), 2)
                 invested = round(qty * exec_price, 2)
 
+                from .market_context import extract_indicators_dict
+                ind_dict = extract_indicators_dict(stock_or_pos=stock, extra_rsi=breakdown.get("rsi"), extra_volume=breakdown.get("volume"))
+
                 pos = {
                     "symbol": symbol,
                     "strategy_type": strategy_type,
@@ -560,23 +566,30 @@ class BotRunner:
                     "buy_price": exec_price,
                     "current_price": exec_price,
                     "stop_loss": stop_loss,
-                    "dema_100": stock.get("DMA_100") or stock.get("dema_100"),
-                    "dema_200": stock.get("DMA_200") or stock.get("dema_200"),
-                    "dema_20": stock.get("DMA_20") or stock.get("dema_20"),
-                    "dema_50": stock.get("DMA_50") or stock.get("dema_50"),
+                    "dema_100": ind_dict.get("dema_100") or stock.get("DMA_100") or stock.get("dema_100"),
+                    "dema_200": ind_dict.get("dema_200") or stock.get("DMA_200") or stock.get("dema_200"),
+                    "dema_20": ind_dict.get("dema_20") or stock.get("DMA_20") or stock.get("dema_20"),
+                    "dema_50": ind_dict.get("dema_50") or stock.get("DMA_50") or stock.get("dema_50"),
                     "phase": "ENTRY",
                     "tranches_count": 1,
                     "invested_amount": invested,
                     "days_at_100_dema": 0,
                     "entry_date": datetime.now(IST).strftime("%Y-%m-%d"),
                     "last_tranche_time": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                    "rank_score": rank_score
+                    "rank_score": rank_score,
+                    "rsi": ind_dict.get("rsi"),
+                    "volume": ind_dict.get("volume"),
+                    "nifty_price": ind_dict.get("nifty_price"),
+                    "nifty_dema_20": ind_dict.get("nifty_dema_20"),
+                    "nifty_dema_50": ind_dict.get("nifty_dema_50"),
+                    "nifty_dema_100": ind_dict.get("nifty_dema_100"),
+                    "nifty_dema_200": ind_dict.get("nifty_dema_200")
                 }
                 save_open_position(pos)
 
                 hr_note = f"+{breakdown['headroom_pct']:.1f}%" if breakdown.get("headroom_pct") else "N/A"
                 trade_note = f"A/B [{strategy_type}] (Rank #{rank_item['rank']} Score: {rank_score:.1f}, {breakdown['mcap_tier']}, Room: {hr_note}): {rank_item['action_reason']}"
-                record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type)
+                record_trade(symbol, "BUY", qty, exec_price, 0.0, 0.0, 0.0, trade_note, strategy_type=strategy_type, indicators=ind_dict)
 
                 state = get_bot_state()
                 new_cash = max(0.0, state.get("available_cash", BotConfig.INITIAL_CAPITAL) - invested)

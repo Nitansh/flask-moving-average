@@ -143,6 +143,39 @@ def init_db():
             conn.execute("ALTER TABLE bot_trades ADD COLUMN charges_breakdown TEXT")
         except Exception: pass
 
+        # Technical indicators and NIFTY 50 benchmark columns
+        for col, col_type in [
+            ("rsi", "REAL"),
+            ("volume", "INTEGER"),
+            ("dema_20", "REAL"),
+            ("dema_50", "REAL"),
+            ("dema_100", "REAL"),
+            ("dema_200", "REAL"),
+            ("nifty_price", "REAL"),
+            ("nifty_dema_20", "REAL"),
+            ("nifty_dema_50", "REAL"),
+            ("nifty_dema_100", "REAL"),
+            ("nifty_dema_200", "REAL")
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE bot_trades ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
+
+        for col, col_type in [
+            ("rsi", "REAL"),
+            ("volume", "INTEGER"),
+            ("nifty_price", "REAL"),
+            ("nifty_dema_20", "REAL"),
+            ("nifty_dema_50", "REAL"),
+            ("nifty_dema_100", "REAL"),
+            ("nifty_dema_200", "REAL")
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE bot_positions ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
+
         # 4. Chronological Audit Logs
         conn.execute("""
             CREATE TABLE IF NOT EXISTS bot_logs (
@@ -223,15 +256,20 @@ def save_open_position(pos):
     with conn:
         conn.execute("""
             INSERT OR REPLACE INTO bot_positions 
-            (symbol, strategy_type, initial_qty, current_qty, buy_price, current_price, stop_loss, dema_100, dema_200, dema_20, dema_50, phase, tranches_count, invested_amount, days_at_100_dema, last_dema_100_check_date, entry_date, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (symbol, strategy_type, initial_qty, current_qty, buy_price, current_price, stop_loss,
+             dema_100, dema_200, dema_20, dema_50, phase, tranches_count, invested_amount,
+             days_at_100_dema, last_dema_100_check_date, entry_date, updated_at,
+             rsi, volume, nifty_price, nifty_dema_20, nifty_dema_50, nifty_dema_100, nifty_dema_200)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             pos["symbol"], pos.get("strategy_type", "TRANCHE_AVERAGING"),
             pos["initial_qty"], pos["current_qty"], pos["buy_price"], pos["current_price"],
             pos["stop_loss"], pos.get("dema_100"), pos.get("dema_200"), pos.get("dema_20"), pos.get("dema_50"),
             pos.get("phase", "ENTRY"), pos.get("tranches_count", 1), pos.get("invested_amount", 0.0),
             pos.get("days_at_100_dema", 0), pos.get("last_dema_100_check_date"),
-            pos.get("entry_date", datetime.now().strftime("%Y-%m-%d")), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            pos.get("entry_date", datetime.now().strftime("%Y-%m-%d")), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            pos.get("rsi"), pos.get("volume"), pos.get("nifty_price"),
+            pos.get("nifty_dema_20"), pos.get("nifty_dema_50"), pos.get("nifty_dema_100"), pos.get("nifty_dema_200")
         ))
 
 def delete_open_position(symbol):
@@ -239,7 +277,14 @@ def delete_open_position(symbol):
     with conn:
         conn.execute("DELETE FROM bot_positions WHERE symbol = ?", (symbol,))
 
-def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl=None, pnl_pct=None, reason="", strategy_type="TRANCHE_AVERAGING", gross_pnl=None, total_charges=None, net_pnl=None, charges_breakdown=None):
+def record_trade(
+    symbol, trade_type, quantity, entry_price, exit_price,
+    pnl=None, pnl_pct=None, reason="", strategy_type="TRANCHE_AVERAGING",
+    gross_pnl=None, total_charges=None, net_pnl=None, charges_breakdown=None,
+    rsi=None, volume=None, dema_20=None, dema_50=None, dema_100=None, dema_200=None,
+    nifty_price=None, nifty_dema_20=None, nifty_dema_50=None, nifty_dema_100=None, nifty_dema_200=None,
+    indicators=None
+):
     from .charges import calculate_charges
     
     qty = int(quantity) if quantity else 0
@@ -267,18 +312,49 @@ def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl=None
         final_breakdown = json.dumps({})
         final_realized = final_gross
 
+    # Indicators & Market Context extraction
+    ind = indicators or {}
+    val_rsi = rsi if rsi is not None else ind.get("rsi")
+    val_vol = volume if volume is not None else ind.get("volume")
+    val_d20 = dema_20 if dema_20 is not None else ind.get("dema_20")
+    val_d50 = dema_50 if dema_50 is not None else ind.get("dema_50")
+    val_d100 = dema_100 if dema_100 is not None else ind.get("dema_100")
+    val_d200 = dema_200 if dema_200 is not None else ind.get("dema_200")
+    val_np = nifty_price if nifty_price is not None else ind.get("nifty_price")
+    val_nd20 = nifty_dema_20 if nifty_dema_20 is not None else ind.get("nifty_dema_20")
+    val_nd50 = nifty_dema_50 if nifty_dema_50 is not None else ind.get("nifty_dema_50")
+    val_nd100 = nifty_dema_100 if nifty_dema_100 is not None else ind.get("nifty_dema_100")
+    val_nd200 = nifty_dema_200 if nifty_dema_200 is not None else ind.get("nifty_dema_200")
+
+    # If NIFTY was not supplied, fetch latest benchmark context
+    if val_np is None:
+        try:
+            from .market_context import get_nifty_market_context
+            nctx = get_nifty_market_context()
+            val_np = nctx.get("nifty_price")
+            val_nd20 = val_nd20 if val_nd20 is not None else nctx.get("nifty_dema_20")
+            val_nd50 = val_nd50 if val_nd50 is not None else nctx.get("nifty_dema_50")
+            val_nd100 = val_nd100 if val_nd100 is not None else nctx.get("nifty_dema_100")
+            val_nd200 = val_nd200 if val_nd200 is not None else nctx.get("nifty_dema_200")
+        except Exception:
+            pass
+
     conn = get_connection()
     with conn:
         conn.execute("""
             INSERT INTO bot_trades (
                 symbol, strategy_type, trade_type, quantity, entry_price, exit_price, 
-                gross_pnl, total_charges, net_pnl, charges_breakdown, realized_pnl, pnl_percent, reason, executed_at
+                gross_pnl, total_charges, net_pnl, charges_breakdown, realized_pnl, pnl_percent, reason, executed_at,
+                rsi, volume, dema_20, dema_50, dema_100, dema_200,
+                nifty_price, nifty_dema_20, nifty_dema_50, nifty_dema_100, nifty_dema_200
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             symbol, strategy_type, trade_type, qty, ep, xp,
             final_gross, final_charges, final_net, final_breakdown, final_realized, final_pct, reason,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            val_rsi, val_vol, val_d20, val_d50, val_d100, val_d200,
+            val_np, val_nd20, val_nd50, val_nd100, val_nd200
         ))
 
 def get_trades(limit=50):
@@ -345,6 +421,19 @@ def get_trade_analytics():
             "total_charges": st_charges
         }
 
+    # Indicator Insights: Average RSI for winning vs losing trades
+    win_rsis = [float(t["rsi"]) for t in winning_trades if t.get("rsi") is not None]
+    loss_rsis = [float(t["rsi"]) for t in losing_trades if t.get("rsi") is not None]
+    avg_win_rsi = round(sum(win_rsis) / len(win_rsis), 1) if win_rsis else None
+    avg_loss_rsi = round(sum(loss_rsis) / len(loss_rsis), 1) if loss_rsis else None
+
+    # Current benchmark context
+    try:
+        from .market_context import get_nifty_market_context
+        market_ctx = get_nifty_market_context()
+    except Exception:
+        market_ctx = {}
+
     return {
         "total_recorded_records": total_trades,
         "total_buys": len(buys),
@@ -362,6 +451,11 @@ def get_trade_analytics():
         "avg_loss": avg_loss,
         "win_loss_ratio": win_loss_ratio,
         "avg_return_pct": avg_return_pct,
+        "indicator_insights": {
+            "avg_win_rsi": avg_win_rsi,
+            "avg_loss_rsi": avg_loss_rsi
+        },
+        "market_context": market_ctx,
         "best_trade": {
             "symbol": best_trade.get("symbol") if best_trade else None,
             "net_pnl": float(best_trade.get("net_pnl") or best_trade.get("realized_pnl") or 0.0) if best_trade else 0.0,
@@ -380,6 +474,7 @@ def get_trade_analytics():
 def generate_trades_csv(trades=None):
     """
     Generates an RFC-4180 compliant CSV string for trade history and algo fine-tuning.
+    Includes comprehensive execution indicators: RSI, Volume, DEMAs, and NIFTY 50 benchmarks.
     """
     import csv
     import io
@@ -411,6 +506,17 @@ def generate_trades_csv(trades=None):
         "Total Charges (INR)",
         "Net Realized PnL (INR)",
         "Return (%)",
+        "RSI",
+        "Volume",
+        "DEMA 20 (INR)",
+        "DEMA 50 (INR)",
+        "DEMA 100 (INR)",
+        "DEMA 200 (INR)",
+        "NIFTY 50 Price (INR)",
+        "NIFTY DEMA 20 (INR)",
+        "NIFTY DEMA 50 (INR)",
+        "NIFTY DEMA 100 (INR)",
+        "NIFTY DEMA 200 (INR)",
         "Execution Reason / Trigger"
     ])
 
@@ -431,6 +537,18 @@ def generate_trades_csv(trades=None):
                 cb = json.loads(raw_cb) if isinstance(raw_cb, str) else raw_cb
             except Exception:
                 pass
+
+        r_rsi = f"{float(t['rsi']):.1f}" if t.get("rsi") is not None and str(t.get("rsi")) != "" else ""
+        r_vol = str(int(t['volume'])) if t.get("volume") is not None and str(t.get("volume")) != "" else ""
+        r_d20 = f"{float(t['dema_20']):.2f}" if t.get("dema_20") is not None and str(t.get("dema_20")) != "" else ""
+        r_d50 = f"{float(t['dema_50']):.2f}" if t.get("dema_50") is not None and str(t.get("dema_50")) != "" else ""
+        r_d100 = f"{float(t['dema_100']):.2f}" if t.get("dema_100") is not None and str(t.get("dema_100")) != "" else ""
+        r_d200 = f"{float(t['dema_200']):.2f}" if t.get("dema_200") is not None and str(t.get("dema_200")) != "" else ""
+        r_np = f"{float(t['nifty_price']):.2f}" if t.get("nifty_price") is not None and str(t.get("nifty_price")) != "" else ""
+        r_nd20 = f"{float(t['nifty_dema_20']):.2f}" if t.get("nifty_dema_20") is not None and str(t.get("nifty_dema_20")) != "" else ""
+        r_nd50 = f"{float(t['nifty_dema_50']):.2f}" if t.get("nifty_dema_50") is not None and str(t.get("nifty_dema_50")) != "" else ""
+        r_nd100 = f"{float(t['nifty_dema_100']):.2f}" if t.get("nifty_dema_100") is not None and str(t.get("nifty_dema_100")) != "" else ""
+        r_nd200 = f"{float(t['nifty_dema_200']):.2f}" if t.get("nifty_dema_200") is not None and str(t.get("nifty_dema_200")) != "" else ""
 
         writer.writerow([
             t.get("id"),
@@ -453,6 +571,17 @@ def generate_trades_csv(trades=None):
             f"{charges:.2f}",
             f"{net:.2f}",
             f"{pnl_pct:.2f}%" if xp > 0 else "",
+            r_rsi,
+            r_vol,
+            r_d20,
+            r_d50,
+            r_d100,
+            r_d200,
+            r_np,
+            r_nd20,
+            r_nd50,
+            r_nd100,
+            r_nd200,
             t.get("reason", "")
         ])
 

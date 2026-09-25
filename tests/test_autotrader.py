@@ -648,13 +648,32 @@ def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monke
     assert "live universe cache" in source
 
 def test_get_trade_analytics_and_csv_export():
-    """Verify calculation of performance analytics and CSV export generation."""
-    from auto_trader.db import record_trade, get_trade_analytics, generate_trades_csv
+    """Verify calculation of performance analytics and CSV export generation with technical indicators."""
+    from auto_trader.db import record_trade, get_trade_analytics, generate_trades_csv, get_trades
 
-    # Record winning trade
-    record_trade("TRENT", "TARGET_1_SELL", 10, 5000.0, 5500.0, reason="Target 1 booked", strategy_type="ONE_SHOT")
+    # Record winning trade with full technical indicators & NIFTY benchmark
+    record_trade(
+        "TRENT", "TARGET_1_SELL", 10, 5000.0, 5500.0,
+        reason="Target 1 booked", strategy_type="ONE_SHOT",
+        rsi=52.4, volume=850000,
+        dema_20=5120.0, dema_50=4980.0, dema_100=4800.0, dema_200=4500.0,
+        nifty_price=23450.0, nifty_dema_20=23200.0, nifty_dema_50=23100.0, nifty_dema_100=22800.0, nifty_dema_200=22200.0
+    )
     # Record losing trade
-    record_trade("INFY", "STOP_LOSS_EXIT", 20, 1500.0, 1420.0, reason="Stop loss hit", strategy_type="ONE_SHOT")
+    record_trade(
+        "INFY", "STOP_LOSS_EXIT", 20, 1500.0, 1420.0,
+        reason="Stop loss hit", strategy_type="ONE_SHOT",
+        rsi=41.2, volume=1200000,
+        dema_20=1480.0, dema_50=1510.0, dema_100=1550.0, dema_200=1600.0,
+        nifty_price=23300.0, nifty_dema_20=23200.0, nifty_dema_50=23100.0, nifty_dema_100=22800.0, nifty_dema_200=22200.0
+    )
+
+    trades = get_trades(limit=2)
+    trent = [t for t in trades if t["symbol"] == "TRENT"][0]
+    assert trent["rsi"] == 52.4
+    assert trent["volume"] == 850000
+    assert trent["dema_20"] == 5120.0
+    assert trent["nifty_price"] == 23450.0
 
     analytics = get_trade_analytics()
     assert analytics["completed_exits"] == 2
@@ -664,10 +683,18 @@ def test_get_trade_analytics_and_csv_export():
     assert analytics["best_trade"]["symbol"] == "TRENT"
     assert analytics["worst_trade"]["symbol"] == "INFY"
     assert analytics["profit_factor"] > 0
+    assert analytics["indicator_insights"]["avg_win_rsi"] == 52.4
+    assert analytics["indicator_insights"]["avg_loss_rsi"] == 41.2
 
     csv_data = generate_trades_csv()
     assert "Trade ID" in csv_data
+    assert "RSI" in csv_data
+    assert "Volume" in csv_data
+    assert "DEMA 20 (INR)" in csv_data
+    assert "NIFTY 50 Price (INR)" in csv_data
     assert "TRENT" in csv_data
+    assert "52.4" in csv_data
+    assert "23450.00" in csv_data
     assert "INFY" in csv_data
     assert "Target 1 booked" in csv_data
 
