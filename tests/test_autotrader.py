@@ -698,6 +698,33 @@ def test_get_trade_analytics_and_csv_export():
     assert "INFY" in csv_data
     assert "Target 1 booked" in csv_data
 
+def test_exit_does_not_trigger_same_price_exit_when_entered_below_50_dema():
+    """Positions entered under Approaching Golden Cross (below 50 DEMA) must not be instantly dumped at entry price."""
+    from auto_trader.strategy import StrategyEngine
+    position = {
+        "symbol": "ASTERDM",
+        "initial_qty": 131,
+        "current_qty": 131,
+        "buy_price": 759.40,
+        "stop_loss": 732.82, # -3.5%
+        "phase": "ENTRY",
+        "days_at_100_dema": 0,
+        "dema_100": 799.54,
+        "dema_50": 774.03,
+        "dema_20": 753.72
+    }
+    current_dema = {
+        "dema_20": 753.72,
+        "dema_50": 774.03,
+        "dema_100": 799.54,
+        "dema_200": 792.02
+    }
+    # Evaluated at entry price 759.40
+    eval_res = StrategyEngine.evaluate_exit(position, 759.40, current_dema)
+    assert eval_res["action"] == "NONE" # Must NOT sell!
+    assert eval_res["reason"] == "Holding within active parameters"
+
+
 
 
 

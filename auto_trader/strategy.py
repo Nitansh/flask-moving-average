@@ -363,21 +363,13 @@ class StrategyEngine:
         dema_50 = current_dema.get("dema_50") or position.get("dema_50")
 
         # ----------------------------------------------------
-        # 1. HARD STOP-LOSS or BREAK BELOW 50 DEMA
+        # 1. HARD STOP-LOSS
         # ----------------------------------------------------
         if current_price <= stop_loss:
             return {
                 "action": "FULL_SELL",
                 "ratio": 1.0,
                 "reason": f"Stop-Loss hit at ₹{current_price:.2f} (SL: ₹{stop_loss:.2f})",
-                "new_phase": "STOPPED_OUT"
-            }
-
-        if dema_50 and current_price < (dema_50 * 0.995):
-            return {
-                "action": "FULL_SELL",
-                "ratio": 1.0,
-                "reason": f"Trend breakdown: Price closed below 50 DEMA (₹{dema_50:.2f})",
                 "new_phase": "STOPPED_OUT"
             }
 
