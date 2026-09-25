@@ -647,6 +647,31 @@ def test_fetch_live_scan_candidates_waits_and_retrieves_completed_universe(monke
     assert candidates[0]["symbol"] == "RELIANCE"
     assert "live universe cache" in source
 
+def test_get_trade_analytics_and_csv_export():
+    """Verify calculation of performance analytics and CSV export generation."""
+    from auto_trader.db import record_trade, get_trade_analytics, generate_trades_csv
+
+    # Record winning trade
+    record_trade("TRENT", "TARGET_1_SELL", 10, 5000.0, 5500.0, reason="Target 1 booked", strategy_type="ONE_SHOT")
+    # Record losing trade
+    record_trade("INFY", "STOP_LOSS_EXIT", 20, 1500.0, 1420.0, reason="Stop loss hit", strategy_type="ONE_SHOT")
+
+    analytics = get_trade_analytics()
+    assert analytics["completed_exits"] == 2
+    assert analytics["winning_trades"] == 1
+    assert analytics["losing_trades"] == 1
+    assert analytics["win_rate_pct"] == 50.0
+    assert analytics["best_trade"]["symbol"] == "TRENT"
+    assert analytics["worst_trade"]["symbol"] == "INFY"
+    assert analytics["profit_factor"] > 0
+
+    csv_data = generate_trades_csv()
+    assert "Trade ID" in csv_data
+    assert "TRENT" in csv_data
+    assert "INFY" in csv_data
+    assert "Target 1 booked" in csv_data
+
+
 
 
 

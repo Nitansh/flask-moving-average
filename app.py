@@ -918,7 +918,7 @@ def get_sector_trends_route():
 # ==========================================
 try:
     from auto_trader import bot_runner, BotConfig
-    from auto_trader.db import update_bot_state, get_open_positions, get_trades, get_recent_logs, get_rankings
+    from auto_trader.db import update_bot_state, get_open_positions, get_trades, get_recent_logs, get_rankings, get_trade_analytics, generate_trades_csv
 
     @app.route('/api/autotrader/status', methods=['GET'])
     def get_autotrader_status():
@@ -1000,8 +1000,34 @@ try:
     @app.route('/api/autotrader/trades', methods=['GET'])
     def get_autotrader_trades():
         try:
-            limit = int(request.args.get("limit", 50))
+            limit_val = request.args.get("limit", "50")
+            limit = int(limit_val) if limit_val and limit_val.isdigit() and int(limit_val) > 0 else None
             return jsonify({"trades": get_trades(limit=limit)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/trades/analytics', methods=['GET'])
+    def get_autotrader_trade_analytics():
+        try:
+            return jsonify({"analytics": get_trade_analytics()}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/autotrader/trades/export-csv', methods=['GET'])
+    def export_autotrader_trades_csv():
+        try:
+            from datetime import datetime
+            from flask import Response
+            csv_data = generate_trades_csv()
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            return Response(
+                csv_data,
+                mimetype="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=autotrader_trades_{date_str}.csv",
+                    "Content-Type": "text/csv; charset=utf-8"
+                }
+            )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

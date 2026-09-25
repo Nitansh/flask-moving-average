@@ -246,7 +246,7 @@ def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl=None
     ep = float(entry_price) if entry_price else 0.0
     xp = float(exit_price) if exit_price else 0.0
 
-    if "SELL" in str(trade_type).upper() and ep > 0 and xp > 0 and qty > 0:
+    if ("SELL" in str(trade_type).upper() or "EXIT" in str(trade_type).upper() or xp > 0) and ep > 0 and xp > 0 and qty > 0:
         calculated_gross = round((xp - ep) * qty, 2)
         charges_data = calculate_charges(ep, xp, qty, is_delivery=True)
         calculated_charges = charges_data["total_charges"]
@@ -283,8 +283,180 @@ def record_trade(symbol, trade_type, quantity, entry_price, exit_price, pnl=None
 
 def get_trades(limit=50):
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM bot_trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    if limit and int(limit) > 0:
+        rows = conn.execute("SELECT * FROM bot_trades ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM bot_trades ORDER BY id DESC").fetchall()
     return [dict(r) for r in rows]
+
+def get_trade_analytics():
+    """
+    Computes comprehensive performance and execution analytics across all completed trades
+    for fine-tuning the trading algorithm.
+    """
+    trades = get_trades(limit=None)
+    
+    total_trades = len(trades)
+    completed_exits = [t for t in trades if t.get("trade_type") not in ("BUY", "BUY_TRANCHE")]
+    buys = [t for t in trades if t.get("trade_type") in ("BUY", "BUY_TRANCHE")]
+
+    exit_count = len(completed_exits)
+    winning_trades = [t for t in completed_exits if (t.get("net_pnl") or t.get("realized_pnl") or 0.0) > 0]
+    losing_trades = [t for t in completed_exits if (t.get("net_pnl") or t.get("realized_pnl") or 0.0) < 0]
+    scratch_trades = [t for t in completed_exits if (t.get("net_pnl") or t.get("realized_pnl") or 0.0) == 0]
+
+    win_count = len(winning_trades)
+    loss_count = len(losing_trades)
+    win_rate_pct = round((win_count / exit_count) * 100.0, 1) if exit_count > 0 else 0.0
+
+    total_gross_pnl = round(sum(float(t.get("gross_pnl") or 0.0) for t in completed_exits), 2)
+    total_charges_paid = round(sum(float(t.get("total_charges") or 0.0) for t in completed_exits), 2)
+    total_net_pnl = round(sum(float(t.get("net_pnl") or t.get("realized_pnl") or 0.0) for t in completed_exits), 2)
+
+    total_gains = sum(float(t.get("net_pnl") or t.get("realized_pnl") or 0.0) for t in winning_trades)
+    total_losses = abs(sum(float(t.get("net_pnl") or t.get("realized_pnl") or 0.0) for t in losing_trades))
+
+    profit_factor = round(total_gains / total_losses, 2) if total_losses > 0 else (99.9 if total_gains > 0 else 0.0)
+
+    avg_trade_pnl = round(total_net_pnl / exit_count, 2) if exit_count > 0 else 0.0
+    avg_win = round(total_gains / win_count, 2) if win_count > 0 else 0.0
+    avg_loss = round(-total_losses / loss_count, 2) if loss_count > 0 else 0.0
+    win_loss_ratio = round(abs(avg_win / avg_loss), 2) if avg_loss != 0 else 0.0
+
+    pnl_pcts = [float(t.get("pnl_percent") or 0.0) for t in completed_exits]
+    avg_return_pct = round(sum(pnl_pcts) / exit_count, 2) if exit_count > 0 else 0.0
+
+    best_trade = max(completed_exits, key=lambda t: float(t.get("net_pnl") or t.get("realized_pnl") or 0.0), default=None)
+    worst_trade = min(completed_exits, key=lambda t: float(t.get("net_pnl") or t.get("realized_pnl") or 0.0), default=None)
+
+    strategy_breakdown = {}
+    for st in ("ONE_SHOT", "TRANCHE_AVERAGING"):
+        st_exits = [t for t in completed_exits if t.get("strategy_type") == st]
+        st_wins = [t for t in st_exits if (t.get("net_pnl") or t.get("realized_pnl") or 0.0) > 0]
+        st_cnt = len(st_exits)
+        st_net = round(sum(float(t.get("net_pnl") or t.get("realized_pnl") or 0.0) for t in st_exits), 2)
+        st_charges = round(sum(float(t.get("total_charges") or 0.0) for t in st_exits), 2)
+        strategy_breakdown[st] = {
+            "total_exits": st_cnt,
+            "win_count": len(st_wins),
+            "loss_count": st_cnt - len(st_wins),
+            "win_rate_pct": round((len(st_wins) / st_cnt) * 100.0, 1) if st_cnt > 0 else 0.0,
+            "net_pnl": st_net,
+            "total_charges": st_charges
+        }
+
+    return {
+        "total_recorded_records": total_trades,
+        "total_buys": len(buys),
+        "completed_exits": exit_count,
+        "winning_trades": win_count,
+        "losing_trades": loss_count,
+        "scratch_trades": len(scratch_trades),
+        "win_rate_pct": win_rate_pct,
+        "gross_realized_pnl": total_gross_pnl,
+        "total_charges_paid": total_charges_paid,
+        "net_realized_pnl": total_net_pnl,
+        "profit_factor": profit_factor,
+        "avg_trade_pnl": avg_trade_pnl,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "win_loss_ratio": win_loss_ratio,
+        "avg_return_pct": avg_return_pct,
+        "best_trade": {
+            "symbol": best_trade.get("symbol") if best_trade else None,
+            "net_pnl": float(best_trade.get("net_pnl") or best_trade.get("realized_pnl") or 0.0) if best_trade else 0.0,
+            "pnl_pct": float(best_trade.get("pnl_percent") or 0.0) if best_trade else 0.0,
+            "date": best_trade.get("executed_at") if best_trade else None
+        } if best_trade else None,
+        "worst_trade": {
+            "symbol": worst_trade.get("symbol") if worst_trade else None,
+            "net_pnl": float(worst_trade.get("net_pnl") or worst_trade.get("realized_pnl") or 0.0) if worst_trade else 0.0,
+            "pnl_pct": float(worst_trade.get("pnl_percent") or 0.0) if worst_trade else 0.0,
+            "date": worst_trade.get("executed_at") if worst_trade else None
+        } if worst_trade else None,
+        "strategy_breakdown": strategy_breakdown
+    }
+
+def generate_trades_csv(trades=None):
+    """
+    Generates an RFC-4180 compliant CSV string for trade history and algo fine-tuning.
+    """
+    import csv
+    import io
+    
+    if trades is None:
+        trades = get_trades(limit=None)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Trade ID",
+        "Executed At",
+        "Symbol",
+        "Action / Type",
+        "Strategy",
+        "Quantity",
+        "Entry Price (INR)",
+        "Exit Price (INR)",
+        "Turnover (INR)",
+        "Gross PnL (INR)",
+        "Brokerage (INR)",
+        "STT (INR)",
+        "Exchange Txn (INR)",
+        "GST (INR)",
+        "SEBI Fees (INR)",
+        "Stamp Duty (INR)",
+        "DP Charges (INR)",
+        "Total Charges (INR)",
+        "Net Realized PnL (INR)",
+        "Return (%)",
+        "Execution Reason / Trigger"
+    ])
+
+    for t in trades:
+        qty = int(t.get("quantity") or 0)
+        ep = float(t.get("entry_price") or 0.0)
+        xp = float(t.get("exit_price") or 0.0)
+        turnover = round((xp * qty) if xp > 0 else (ep * qty), 2)
+        gross = float(t.get("gross_pnl") or 0.0)
+        charges = float(t.get("total_charges") or 0.0)
+        net = float(t.get("net_pnl") or t.get("realized_pnl") or 0.0)
+        pnl_pct = float(t.get("pnl_percent") or 0.0)
+
+        cb = {}
+        raw_cb = t.get("charges_breakdown")
+        if raw_cb:
+            try:
+                cb = json.loads(raw_cb) if isinstance(raw_cb, str) else raw_cb
+            except Exception:
+                pass
+
+        writer.writerow([
+            t.get("id"),
+            t.get("executed_at"),
+            t.get("symbol"),
+            t.get("trade_type"),
+            t.get("strategy_type", "ONE_SHOT"),
+            qty,
+            f"{ep:.2f}",
+            f"{xp:.2f}" if xp > 0 else "",
+            f"{turnover:.2f}",
+            f"{gross:.2f}",
+            f"{float(cb.get('brokerage', 0.0)):.2f}",
+            f"{float(cb.get('stt', 0.0)):.2f}",
+            f"{float(cb.get('exchange_txn', 0.0)):.2f}",
+            f"{float(cb.get('gst', 0.0)):.2f}",
+            f"{float(cb.get('sebi_charges', 0.0)):.2f}",
+            f"{float(cb.get('stamp_duty', 0.0)):.2f}",
+            f"{float(cb.get('dp_charges', 0.0)):.2f}",
+            f"{charges:.2f}",
+            f"{net:.2f}",
+            f"{pnl_pct:.2f}%" if xp > 0 else "",
+            t.get("reason", "")
+        ])
+
+    return output.getvalue()
 
 def get_recent_logs(limit=100):
     conn = get_connection()
