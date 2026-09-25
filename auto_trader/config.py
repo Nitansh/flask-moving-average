@@ -17,18 +17,19 @@ class BotConfig:
     MODE = os.environ.get("AUTOTRADER_MODE", "PAPER").upper()
 
     # --- Capital & Risk Management Defaults ---
-    INITIAL_CAPITAL = float(os.environ.get("AUTOTRADER_CAPITAL", 2000000.0)) # ₹20,00,000 (20 Lac pool)
-    BUCKET_CAPITAL_PER_STOCK = float(os.environ.get("AUTOTRADER_BUCKET_CAPITAL", 250000.0)) # ₹2,50,000 (2.5 Lac max per stock)
-    TRANCHE_SIZE = float(os.environ.get("AUTOTRADER_TRANCHE_SIZE", 50000.0)) # ₹50,000 per shot (averaging / scaling in)
-    MAX_TRANCHES_PER_STOCK = int(os.environ.get("AUTOTRADER_MAX_TRANCHES", 5)) # Up to 5 tranches (5 x 50k = 2.5L)
-    MAX_ACTIVE_POSITIONS = int(os.environ.get("AUTOTRADER_MAX_POSITIONS", 8)) # Up to 8 stocks (20L / 2.5L)
-    MAX_DAILY_LOSS_PCT = 5.0 # Stop trading if daily portfolio drawdown reaches -5% (-₹1,00,000)
+    INITIAL_CAPITAL = float(os.environ.get("AUTOTRADER_CAPITAL", 500000.0)) # ₹5,00,000 (5 Lac pool)
+    BUCKET_CAPITAL_PER_STOCK = float(os.environ.get("AUTOTRADER_BUCKET_CAPITAL", 100000.0)) # ₹1,00,000 (1 Lac max per stock)
+    TRANCHE_SIZE = float(os.environ.get("AUTOTRADER_TRANCHE_SIZE", 100000.0)) # ₹1,00,000 One-Shot allocation
+    MAX_TRANCHES_PER_STOCK = int(os.environ.get("AUTOTRADER_MAX_TRANCHES", 1)) # 1 shot only (no tranche averaging)
+    MAX_ACTIVE_POSITIONS = int(os.environ.get("AUTOTRADER_MAX_POSITIONS", 5)) # Exactly 5 stocks (5L / 1L)
+    MAX_DAILY_LOSS_PCT = 5.0 # Stop trading if daily portfolio drawdown reaches -5% (-₹25,000)
     HARD_STOP_LOSS_PCT = 3.5 # Hard stop loss per trade (-3.5%)
 
-    # --- A/B Testing Strategy Split (Half Tranche Averaging vs Half One-Shot) ---
-    AB_TEST_ENABLED = True
-    MAX_TRANCHE_POSITIONS = 4 # 4 slots for 50k Tranche Averaging (up to ₹2.5L each)
-    MAX_ONE_SHOT_POSITIONS = 4 # 4 slots for ₹2.5L One-Shot Lump Sum
+    # --- Strategy Mode (One-Shot Lump Sum Only) ---
+    STRATEGY_MODE = os.environ.get("AUTOTRADER_STRATEGY_MODE", "ONE_SHOT").upper() # 'ONE_SHOT'
+    AB_TEST_ENABLED = False # Pure One-Shot entry (Tranche Averaging disabled)
+    MAX_TRANCHE_POSITIONS = 0 # 0 slots for Tranche Averaging
+    MAX_ONE_SHOT_POSITIONS = 5 # 5 slots for ₹1.0L One-Shot Lump Sum
 
     # --- Strategy Parameters (DEMA Stage-Rider) ---
     MIN_HEADROOM_TO_100_DEMA = float(os.environ.get("AUTOTRADER_MIN_HEADROOM_100_DEMA", 4.0)) # Minimum +4.0% distance from entry price to 100 DEMA

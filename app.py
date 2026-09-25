@@ -984,7 +984,7 @@ try:
     def reset_autotrader_endpoint():
         try:
             data = request.get_json(silent=True) or {}
-            initial_capital = float(data.get("initial_capital", 2000000.0))
+            initial_capital = float(data.get("initial_capital", BotConfig.INITIAL_CAPITAL))
             success, msg = bot_runner.reset(initial_capital=initial_capital)
             return jsonify({"success": success, "message": msg, "status": bot_runner.get_status()}), 200
         except Exception as e:

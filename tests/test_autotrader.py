@@ -18,11 +18,11 @@ def setup_db():
         conn.execute("DELETE FROM bot_trades")
         conn.execute("DELETE FROM bot_logs")
     update_bot_state(
-        total_capital=2000000.0,
-        available_cash=2000000.0,
-        bucket_capital=250000.0,
-        tranche_size=50000.0,
-        max_positions=8,
+        total_capital=BotConfig.INITIAL_CAPITAL,
+        available_cash=BotConfig.INITIAL_CAPITAL,
+        bucket_capital=BotConfig.BUCKET_CAPITAL_PER_STOCK,
+        tranche_size=BotConfig.TRANCHE_SIZE,
+        max_positions=BotConfig.MAX_ACTIVE_POSITIONS,
         is_running=0
     )
 
@@ -153,8 +153,9 @@ def test_strategy_entry_qualifies_on_approaching_golden_cross():
     assert is_valid is True
     assert "Approaching Golden Cross" in reason
 
-def test_tranche_scale_in_requires_minimum_price_dip():
+def test_tranche_scale_in_requires_minimum_price_dip(monkeypatch):
     """Stock must pull back at least -3.0% below average buy price to add an averaging tranche."""
+    monkeypatch.setattr(BotConfig, "MAX_TRANCHES_PER_STOCK", 5)
     position = {
         "symbol": "TRENT",
         "initial_qty": 10,
@@ -181,23 +182,23 @@ def test_tranche_scale_in_requires_minimum_price_dip():
     assert "Dip-Buy Tranche" in reason
 
 def test_tranche_bucket_cap_enforcement():
-    """Cannot add more than 5 tranches or exceed ₹2.5L bucket cap."""
+    """Cannot add tranches in One-Shot mode or when bucket cap is reached."""
     position = {
         "symbol": "BEL",
-        "initial_qty": 1000,
-        "current_qty": 1000,
+        "initial_qty": 400,
+        "current_qty": 400,
         "buy_price": 250.0,
-        "tranches_count": 5, # already 5 tranches
-        "invested_amount": 250000.0
+        "tranches_count": 1,
+        "invested_amount": 100000.0
     }
     can_add, reason = RiskManager.can_add_tranche(position)
     assert can_add is False
-    assert "Max tranches reached" in reason
+    assert "One-Shot" in reason or "Max tranches" in reason
 
-def test_risk_manager_tranche_sizing():
-    """For ₹50,000 tranche and stock at ₹1,000, tranche size is 50 shares."""
+def test_risk_manager_one_shot_sizing():
+    """For ₹100,000 One-Shot allocation and stock at ₹1,000, size is 100 shares."""
     qty = RiskManager.calculate_position_size(price=1000.0)
-    assert qty == 50 # 50000 / 1000 = 50 shares
+    assert qty == 100 # 100000 / 1000 = 100 shares
 
 def test_exit_100_dema_resistance_locks_profit():
     """When price reaches 99.9% of 100 DEMA, sell 30% and move SL to breakeven."""
@@ -276,17 +277,44 @@ def test_kite_client_paper_execution():
     assert sell_res["status"] == "SUCCESS"
     assert "PAPER" in sell_res["order_id"]
 
-def test_ab_strategy_determination_and_balancing():
-    """Bot should balance positions between TRANCHE_AVERAGING and ONE_SHOT (max 4 each)."""
+def test_ab_strategy_determination_and_balancing(monkeypatch):
+    """Bot should assign ONE_SHOT exclusively in pure mode, and balance positions when A/B is enabled."""
     from auto_trader.db import save_open_position, delete_open_position, get_open_positions
 
     # Clear open positions
     for p in get_open_positions():
         delete_open_position(p["symbol"])
 
-    # Initially empty, starts with TRANCHE_AVERAGING or ONE_SHOT
+    # 1. Pure One-Shot Mode (Current Default)
     strat, reason = RiskManager.determine_next_strategy()
-    assert strat in ["TRANCHE_AVERAGING", "ONE_SHOT"]
+    assert strat == "ONE_SHOT"
+
+    # Fill 5 ONE_SHOT positions
+    for i in range(5):
+        save_open_position({
+            "symbol": f"OS_STOCK_{i}",
+            "strategy_type": "ONE_SHOT",
+            "initial_qty": 100,
+            "current_qty": 100,
+            "buy_price": 500.0,
+            "current_price": 500.0,
+            "stop_loss": 480.0
+        })
+
+    # All 5 slots are full
+    strat, reason = RiskManager.determine_next_strategy()
+    assert strat is None
+    assert "Maximum stock buckets reached" in reason
+
+    # 2. When A/B Testing is explicitly enabled
+    for p in get_open_positions():
+        delete_open_position(p["symbol"])
+
+    monkeypatch.setattr(BotConfig, "AB_TEST_ENABLED", True)
+    monkeypatch.setattr(BotConfig, "MAX_TRANCHE_POSITIONS", 4)
+    monkeypatch.setattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", 4)
+    monkeypatch.setattr(BotConfig, "MAX_ACTIVE_POSITIONS", 8)
+    update_bot_state(max_positions=8)
 
     # If 4 TRANCHE positions exist, next should strictly be ONE_SHOT
     for i in range(4):
@@ -303,47 +331,30 @@ def test_ab_strategy_determination_and_balancing():
     strat, _ = RiskManager.determine_next_strategy()
     assert strat == "ONE_SHOT"
 
-    # Fill 4 ONE_SHOT positions as well (4 + 4 = 8 total)
-    for i in range(4):
-        save_open_position({
-            "symbol": f"OS_STOCK_{i}",
-            "strategy_type": "ONE_SHOT",
-            "initial_qty": 100,
-            "current_qty": 100,
-            "buy_price": 500.0,
-            "current_price": 500.0,
-            "stop_loss": 480.0
-        })
-
-    # Now all 8 slots are full
-    strat, reason = RiskManager.determine_next_strategy()
-    assert strat is None
-    assert "Maximum stock buckets reached" in reason
-
 def test_one_shot_position_sizing_and_no_scaling():
-    """ONE_SHOT positions receive full ₹2.5L lump sum and reject scale-in attempts."""
+    """ONE_SHOT positions receive full ₹1.0L lump sum and reject scale-in attempts."""
     from auto_trader.db import delete_open_position, get_open_positions
 
     for p in get_open_positions():
         delete_open_position(p["symbol"])
 
-    # Stock at ₹1000: One-shot receives 250,000 / 1000 = 250 shares
+    # Stock at ₹1000: One-shot receives 100,000 / 1000 = 100 shares
     os_qty = RiskManager.calculate_position_size(price=1000.0, strategy_type="ONE_SHOT")
-    assert os_qty == 250
+    assert os_qty == 100
 
-    # Tranche receives 50,000 / 1000 = 50 shares
+    # Tranche receives 100,000 / 1000 = 100 shares
     tr_qty = RiskManager.calculate_position_size(price=1000.0, strategy_type="TRANCHE_AVERAGING")
-    assert tr_qty == 50
+    assert tr_qty == 100
 
     # ONE_SHOT position cannot add tranches
     os_pos = {
         "symbol": "TRENT",
         "strategy_type": "ONE_SHOT",
-        "initial_qty": 250,
-        "current_qty": 250,
+        "initial_qty": 100,
+        "current_qty": 100,
         "buy_price": 1000.0,
         "tranches_count": 1,
-        "invested_amount": 250000.0
+        "invested_amount": 100000.0
     }
     can_scale, reason = RiskManager.can_add_tranche(os_pos)
     assert can_scale is False
@@ -434,7 +445,7 @@ def test_bot_reset():
     assert len(get_open_positions()) == 1
     assert len(get_trades()) >= 1
 
-    success, msg = bot_runner.reset(initial_capital=2000000.0)
+    success, msg = bot_runner.reset(initial_capital=500000.0)
     assert success is True
     assert "reset" in msg.lower()
 
@@ -443,8 +454,8 @@ def test_bot_reset():
     assert len(get_trades()) == 0
     state = get_bot_state()
     assert state["is_running"] == 0
-    assert state["available_cash"] == 2000000.0
-    assert state["total_capital"] == 2000000.0
+    assert state["available_cash"] == 500000.0
+    assert state["total_capital"] == 500000.0
 
 def test_calculate_rank_score_mcap_tiers():
     """Validates market cap tier scoring: Largecap (25) > Midcap (18) > Smallcap (8)."""

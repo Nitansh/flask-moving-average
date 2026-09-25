@@ -23,11 +23,11 @@ def init_db():
                 id INTEGER PRIMARY KEY,
                 is_running INTEGER DEFAULT 0,
                 mode TEXT DEFAULT 'PAPER',
-                total_capital REAL DEFAULT 2000000.0,
-                available_cash REAL DEFAULT 2000000.0,
-                bucket_capital REAL DEFAULT 250000.0,
-                tranche_size REAL DEFAULT 50000.0,
-                max_positions INTEGER DEFAULT 8,
+                total_capital REAL DEFAULT 500000.0,
+                available_cash REAL DEFAULT 500000.0,
+                bucket_capital REAL DEFAULT 100000.0,
+                tranche_size REAL DEFAULT 100000.0,
+                max_positions INTEGER DEFAULT 5,
                 partial_profit_pct REAL DEFAULT 30.0,
                 stagnation_days INTEGER DEFAULT 3,
                 min_headroom_to_100_dema REAL DEFAULT 4.0,
@@ -37,22 +37,35 @@ def init_db():
 
         # Add bucket_capital / tranche_size / min_headroom columns if missing in existing table
         try:
-            conn.execute("ALTER TABLE bot_state ADD COLUMN bucket_capital REAL DEFAULT 250000.0")
+            conn.execute("ALTER TABLE bot_state ADD COLUMN bucket_capital REAL DEFAULT 100000.0")
         except Exception: pass
         try:
-            conn.execute("ALTER TABLE bot_state ADD COLUMN tranche_size REAL DEFAULT 50000.0")
+            conn.execute("ALTER TABLE bot_state ADD COLUMN tranche_size REAL DEFAULT 100000.0")
         except Exception: pass
         try:
             conn.execute("ALTER TABLE bot_state ADD COLUMN min_headroom_to_100_dema REAL DEFAULT 4.0")
         except Exception: pass
 
-        # Seed initial row if empty
-        row = conn.execute("SELECT id FROM bot_state WHERE id = 1").fetchone()
+        # Seed initial row if empty, or migrate legacy 20L default if no active positions
+        row = conn.execute("SELECT id, total_capital FROM bot_state WHERE id = 1").fetchone()
         if not row:
             conn.execute("""
                 INSERT INTO bot_state (id, is_running, mode, total_capital, available_cash, bucket_capital, tranche_size, max_positions, partial_profit_pct, stagnation_days, min_headroom_to_100_dema, updated_at)
-                VALUES (1, 0, 'PAPER', 2000000.0, 2000000.0, 250000.0, 50000.0, 8, 30.0, 3, 4.0, ?)
+                VALUES (1, 0, 'PAPER', 500000.0, 500000.0, 100000.0, 100000.0, 5, 30.0, 3, 4.0, ?)
             """, (datetime.now(timezone.utc).isoformat(),))
+        elif row["total_capital"] == 2000000.0:
+            open_pos = conn.execute("SELECT count(*) as cnt FROM bot_positions").fetchone()
+            if not open_pos or open_pos["cnt"] == 0:
+                conn.execute("""
+                    UPDATE bot_state
+                    SET total_capital = 500000.0,
+                        available_cash = 500000.0,
+                        bucket_capital = 100000.0,
+                        tranche_size = 100000.0,
+                        max_positions = 5,
+                        updated_at = ?
+                    WHERE id = 1
+                """, (datetime.now(timezone.utc).isoformat(),))
 
         # 2. Open Positions
         conn.execute("""
@@ -334,7 +347,7 @@ def get_rankings(limit=100):
         print(f"Error getting rankings: {e}")
         return []
 
-def reset_autotrader(initial_capital=2000000.0):
+def reset_autotrader(initial_capital=None):
     """
     Resets the Auto-Trader database to pristine initial testing state:
     - Clears all open positions
@@ -343,6 +356,12 @@ def reset_autotrader(initial_capital=2000000.0):
     - Clears all opportunity rankings
     - Resets bot state: available_cash = initial_capital, total_capital = initial_capital, is_running = 0
     """
+    from .config import BotConfig
+    init_cap = float(initial_capital) if initial_capital is not None else BotConfig.INITIAL_CAPITAL
+    bucket_cap = BotConfig.BUCKET_CAPITAL_PER_STOCK
+    tranche_sz = BotConfig.TRANCHE_SIZE
+    max_pos = BotConfig.MAX_ACTIVE_POSITIONS
+
     conn = get_connection()
     with conn:
         conn.execute("DELETE FROM bot_positions")
@@ -354,10 +373,13 @@ def reset_autotrader(initial_capital=2000000.0):
             SET is_running = 0,
                 available_cash = ?,
                 total_capital = ?,
+                bucket_capital = ?,
+                tranche_size = ?,
+                max_positions = ?,
                 updated_at = ?
             WHERE id = 1
-        """, (float(initial_capital), float(initial_capital), datetime.now(timezone.utc).isoformat()))
+        """, (init_cap, init_cap, bucket_cap, tranche_sz, max_pos, datetime.now(timezone.utc).isoformat()))
 
-    log_event("INFO", "Auto-Trader reset to initial testing state.", {"initial_capital": float(initial_capital)})
+    log_event("INFO", "Auto-Trader reset to initial testing state.", {"initial_capital": init_cap, "bucket_capital": bucket_cap, "max_positions": max_pos})
     return True
 

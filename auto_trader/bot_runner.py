@@ -463,7 +463,10 @@ class BotRunner:
             rsi_val = float(b.get("rsi") or 0.0)
             mcap_tier_val = str(b.get("mcap_tier", "SMALLCAP")).upper()
             vol_val = int(b.get("volume") or 0)
-            strat_val = "ONE_SHOT" if (idx % 2 == 1 and mcap_tier_val in ["LARGECAP", "MIDCAP"]) else "TRANCHE_AVERAGING"
+            if not getattr(BotConfig, "AB_TEST_ENABLED", True) or getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 0) == 0:
+                strat_val = "ONE_SHOT"
+            else:
+                strat_val = "ONE_SHOT" if (idx % 2 == 1 and mcap_tier_val in ["LARGECAP", "MIDCAP"]) else "TRANCHE_AVERAGING"
             gc_type_val = b.get("crossover_type", "NO_CROSSOVER")
             gc_label_val = b.get("crossover_label", "")
             has_gc_val = gc_type_val in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"]
@@ -576,8 +579,8 @@ class BotRunner:
                 rank_item["status"] = "BOUGHT"
                 save_rankings(self.ranked_opportunities)
 
-                strat_label = "One-Shot Lump Sum (₹2.5L)" if strategy_type == "ONE_SHOT" else "Tranche Averaging (Shot 1/5, ₹50k)"
-                log_event("SUCCESS", f"Opened new [{strat_label}] in #{rank_item['rank']}-Ranked {symbol} (Rank Score: {rank_score:.1f}, Tier: {breakdown['mcap_tier']}, Headroom: {hr_note}, RSI: {breakdown.get('rsi')}): {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
+                strat_label = f"One-Shot Lump Sum (₹{invested:,.0f})" if strategy_type == "ONE_SHOT" else f"Tranche Averaging (Shot 1/{BotConfig.MAX_TRANCHES_PER_STOCK}, ₹{invested:,.0f})"
+                log_event("SUCCESS", f"Opened new [{strat_label}] in #{rank_item['rank']}-Ranked {symbol} (Rank Score: {rank_score:.1f}, Tier: {breakdown.get('mcap_tier', 'N/A')}, Headroom: {hr_note}, RSI: {breakdown.get('rsi')}): {qty} shares @ ₹{exec_price:.2f} (Total: ₹{invested:.2f}). SL set at ₹{stop_loss:.2f}")
                 trades_opened += 1
 
     def compute_performance_matrix(self):

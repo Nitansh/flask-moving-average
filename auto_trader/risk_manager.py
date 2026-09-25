@@ -47,6 +47,15 @@ class RiskManager:
         bucket_size = RiskManager.get_bucket_size()
         tranche_size = RiskManager.get_tranche_size()
 
+        # Pure One-Shot mode (no tranche averaging)
+        if not getattr(BotConfig, "AB_TEST_ENABLED", True) or getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 0) == 0:
+            max_os = getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", max_positions)
+            if one_shot_count >= max_os:
+                return None, f"Maximum One-Shot positions reached ({one_shot_count}/{max_os})"
+            if available_cash < (bucket_size * 0.4):
+                return None, f"Insufficient cash for One-Shot entry (Available: ₹{available_cash:.2f})"
+            return "ONE_SHOT", "OK"
+
         max_tranche_slots = getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 4)
         max_one_shot_slots = getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", 4)
 
@@ -80,15 +89,19 @@ class RiskManager:
         if strategy_type:
             tranche_count, one_shot_count = RiskManager.get_strategy_counts()
             if strategy_type == "ONE_SHOT":
-                if one_shot_count >= getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", 4):
-                    return False, f"Maximum One-Shot positions reached ({one_shot_count}/4)"
+                max_os = getattr(BotConfig, "MAX_ONE_SHOT_POSITIONS", max_positions)
+                if one_shot_count >= max_os:
+                    return False, f"Maximum One-Shot positions reached ({one_shot_count}/{max_os})"
                 bucket_size = RiskManager.get_bucket_size()
                 if available_cash < (bucket_size * 0.4):
                     return False, f"Insufficient cash for One-Shot entry (Available: ₹{available_cash:.2f}, Needed: ~₹{bucket_size * 0.4:.2f})"
                 return True, "OK"
             else:
-                if tranche_count >= getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 4):
-                    return False, f"Maximum Tranche Averaging positions reached ({tranche_count}/4)"
+                max_tr = getattr(BotConfig, "MAX_TRANCHE_POSITIONS", 0)
+                if not getattr(BotConfig, "AB_TEST_ENABLED", True) or max_tr == 0:
+                    return False, "Tranche Averaging strategy is disabled in current config"
+                if tranche_count >= max_tr:
+                    return False, f"Maximum Tranche Averaging positions reached ({tranche_count}/{max_tr})"
                 tranche_size = RiskManager.get_tranche_size()
                 if available_cash < (tranche_size * 0.5):
                     return False, f"Insufficient cash for Tranche entry (Available: ₹{available_cash:.2f})"
@@ -99,9 +112,9 @@ class RiskManager:
 
     @staticmethod
     def can_add_tranche(position):
-        """Checks if an existing stock position can accept another ₹50,000 tranche."""
-        # ONE_SHOT positions are lump-sum and never scaled into
-        if position.get("strategy_type") == "ONE_SHOT":
+        """Checks if an existing stock position can accept another tranche."""
+        # ONE_SHOT positions are lump-sum and never scaled into; also reject if MAX_TRANCHES_PER_STOCK <= 1
+        if position.get("strategy_type") == "ONE_SHOT" or getattr(BotConfig, "MAX_TRANCHES_PER_STOCK", 1) <= 1:
             return False, "One-Shot strategy does not allow additional averaging tranches"
 
         state = get_bot_state()
@@ -137,14 +150,15 @@ class RiskManager:
         return qty
 
     @staticmethod
-    def calculate_position_size(price, strategy_type="TRANCHE_AVERAGING"):
-        """Calculates initial entry size based on strategy type (Tranche ₹50k vs One-Shot ₹2.5L)."""
+    def calculate_position_size(price, strategy_type=None):
+        """Calculates initial entry size based on strategy type (One-Shot ₹1.0L vs Tranche)."""
         if price <= 0:
             return 0
         state = get_bot_state()
         available_cash = float(state.get("available_cash", 0.0))
+        strat = strategy_type or getattr(BotConfig, "STRATEGY_MODE", "ONE_SHOT")
 
-        if strategy_type == "ONE_SHOT":
+        if strat == "ONE_SHOT":
             budget = min(RiskManager.get_bucket_size(), available_cash)
             return int(budget // price)
         else:
