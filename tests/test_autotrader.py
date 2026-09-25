@@ -67,6 +67,20 @@ def test_strategy_entry_rejected_on_headroom():
     assert is_valid is False
     assert "Insufficient headroom" in reason
 
+def test_strategy_entry_rejected_when_price_above_100_dema():
+    """Stock with price already above 100 DEMA has no Target 1 headroom and MUST be rejected."""
+    above_100_dema = {
+        "symbol": "TRENT",
+        "price": 5200.0, # Price is above 100 DEMA
+        "DMA_20": 4850.0,
+        "DMA_50": 4600.0,
+        "DMA_100": 5000.0,
+        "rsi": 55.0
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(above_100_dema)
+    assert is_valid is False
+    assert "above 100 DEMA" in reason
+
 def test_strategy_entry_scanner_flagged_still_checks_headroom():
     """Even if flagged isBullish by scanner, must have at least 4% headroom to 100 DEMA."""
     scanner_stock_low_headroom = {

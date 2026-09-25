@@ -89,10 +89,16 @@ class StrategyEngine:
         min_headroom = cls.get_min_headroom()
 
         # Enforce Minimum Headroom to 100 DEMA Resistance
-        if dema_100 and dema_100 > price:
+        # Current price MUST be lower than 100 DEMA by at least min_headroom (default >= 4.0% to 5.0%)
+        # to provide sufficient profit runway up to Target 1 resistance.
+        if dema_100 and dema_100 > 0:
+            if price >= dema_100:
+                return False, f"Current price (₹{price:.1f}) is at or above 100 DEMA (₹{dema_100:.1f}). Strategy requires price to be lower than 100 DEMA by at least {min_headroom:.1f}% to ride to Target 1 resistance."
             headroom_pct = ((dema_100 - price) / price) * 100.0
             if headroom_pct < min_headroom:
-                return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < minimum +{min_headroom:.1f}%). Requires at least {min_headroom:.1f}% room for profitable target booking."
+                return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < minimum +{min_headroom:.1f}%). Current price must be lower than 100 DEMA by at least {min_headroom:.1f}% for profitable target booking."
+        else:
+            headroom_pct = 0.0
 
         # STRICT GOLDEN CROSSOVER ENFORCEMENT
         # Disqualifies any stock in Death Cross regime (20 DEMA < 50 DEMA without approaching convergence)
