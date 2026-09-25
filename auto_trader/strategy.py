@@ -41,50 +41,81 @@ class StrategyEngine:
             pass
         return BotConfig.MIN_HEADROOM_TO_100_DEMA
 
-    @staticmethod
-    def evaluate_entry(stock_data):
+    @classmethod
+    def get_crossover_type(cls, stock_data):
+        """
+        Evaluates Golden Crossover status:
+        - GOLDEN_CROSS: 20 DEMA >= 50 DEMA and Price >= 20 DEMA
+        - GOLDEN_CROSS_APPROACHING: 20 DEMA < 50 DEMA, gap <= 3.0%, Price > 20 DEMA
+        - NO_CROSSOVER: Death Cross regime or Price < 20 DEMA
+        """
+        price, dema_20, dema_50, _, _, _ = cls._extract_stock_values(stock_data)
+        if not (price and dema_20 and dema_50):
+            return "NO_CROSSOVER", 999.0, "Missing required Price, 20 DEMA, or 50 DEMA values"
+
+        is_gc_flag = stock_data.get("isGoldenCrossApproaching") in [True, "true"]
+        gc_gap = stock_data.get("goldenCrossGap")
+        if gc_gap is not None:
+            try:
+                gc_gap_val = float(gc_gap)
+            except (ValueError, TypeError):
+                gc_gap_val = ((dema_50 - dema_20) / dema_50) * 100.0 if dema_50 > 0 else 999.0
+        else:
+            gc_gap_val = ((dema_50 - dema_20) / dema_50) * 100.0 if dema_50 > 0 else 999.0
+
+        if dema_20 >= dema_50 and price >= dema_20 and dema_50 > 0:
+            return "GOLDEN_CROSS", gc_gap_val, "Confirmed Golden Cross (20 DEMA >= 50 DEMA)"
+        elif is_gc_flag or (dema_20 < dema_50 and 0.0 <= gc_gap_val <= 3.0 and price > dema_20):
+            return "GOLDEN_CROSS_APPROACHING", gc_gap_val, f"Approaching Golden Cross (Gap: {gc_gap_val:.1f}%)"
+        elif dema_20 < dema_50:
+            return "NO_CROSSOVER", gc_gap_val, f"No Golden Crossover: 20 DEMA (₹{dema_20:.1f}) is {gc_gap_val:.1f}% below 50 DEMA (₹{dema_50:.1f}) (Death Cross regime)"
+        else:
+            return "NO_CROSSOVER", gc_gap_val, f"No Golden Crossover breakout: Price (₹{price:.1f}) is below 20 DEMA (₹{dema_20:.1f})"
+
+    @classmethod
+    def evaluate_entry(cls, stock_data):
         """
         Evaluates whether a stock meets all BUY entry criteria:
-        1. Price > 20 DEMA > 50 DEMA (or scanner isBullish/isGoldenCrossApproaching)
-        2. RSI in momentum expansion zone (40-70, and not > 75)
-        3. Upside room to 100 DEMA is at least min_headroom (default >= 4.0%)
+        1. Golden Crossover structure: Confirmed Golden Cross (20 DEMA >= 50 DEMA & Price >= 20 DEMA)
+           OR Approaching Golden Cross (20 DEMA converging <= 3.0% of 50 DEMA & Price > 20 DEMA).
+        2. Upside room to 100 DEMA is at least min_headroom (default >= 4.0%).
+        3. RSI in momentum expansion zone (40-70, and strictly not > 75).
         """
-        price, dema_20, dema_50, dema_100, dema_200, rsi = StrategyEngine._extract_stock_values(stock_data)
+        price, dema_20, dema_50, dema_100, dema_200, rsi = cls._extract_stock_values(stock_data)
 
         if not (price and dema_20 and dema_50):
             return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
 
-        min_headroom = StrategyEngine.get_min_headroom()
+        min_headroom = cls.get_min_headroom()
 
         # Enforce Minimum Headroom to 100 DEMA Resistance
-        # Crucial: If entry price is within < 4.0% of 100 DEMA, profit-booking at 100 DEMA
-        # would trigger almost immediately without delivering meaningful profit.
         if dema_100 and dema_100 > price:
             headroom_pct = ((dema_100 - price) / price) * 100.0
             if headroom_pct < min_headroom:
                 return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < minimum +{min_headroom:.1f}%). Requires at least {min_headroom:.1f}% room for profitable target booking."
 
-        # 1. Scanner-Confirmed In-Range Setups (isBullish / isGoldenCrossApproaching)
-        is_bullish_flag = stock_data.get("isBullish") in [True, "true"]
-        is_gc_flag = stock_data.get("isGoldenCrossApproaching") in [True, "true"]
+        # STRICT GOLDEN CROSSOVER ENFORCEMENT
+        # Disqualifies any stock in Death Cross regime (20 DEMA < 50 DEMA without approaching convergence)
+        # or where price has broken below 20 DEMA.
+        gc_type, gc_gap_val, gc_desc = cls.get_crossover_type(stock_data)
+        if gc_type == "NO_CROSSOVER":
+            return False, gc_desc
 
-        if is_bullish_flag or is_gc_flag:
-            if rsi and rsi > 75.0:
-                return False, f"RSI {rsi:.1f} indicates extreme overbought exhaustion (> 75)"
-            label = "Bullish In-Range" if is_bullish_flag else "Golden Cross Approaching"
-            headroom_str = f" (+{((dema_100 - price)/price)*100.0:.1f}% room to 100 DEMA)" if (dema_100 and dema_100 > price) else ""
-            return True, f"Moving-Average Live Scanner Confirmed: {label}{headroom_str}"
-
-        # 2. General Technical Entry Filter (for stocks not explicitly flagged by scanner)
-        trend_aligned = (price > dema_20 and price > dema_50) or (price > dema_20 > dema_50)
-        if not trend_aligned:
-            return False, f"Not in bullish alignment (Price: ₹{price:.1f}, 20D: ₹{dema_20:.1f}, 50D: ₹{dema_50:.1f})"
-
-        # RSI Momentum Filter (40 to 70)
-        if rsi and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
+        # RSI Momentum Filter
+        if rsi and rsi > 75.0:
+            return False, f"RSI {rsi:.1f} indicates extreme overbought exhaustion (> 75)"
+        if rsi and gc_type == "GOLDEN_CROSS" and not (BotConfig.RSI_MIN <= rsi <= BotConfig.RSI_MAX):
             return False, f"RSI {rsi:.1f} outside optimal momentum range ({BotConfig.RSI_MIN}-{BotConfig.RSI_MAX})"
+        if rsi and gc_type == "GOLDEN_CROSS_APPROACHING" and not (35.0 <= rsi <= 68.0):
+            return False, f"RSI {rsi:.1f} outside optimal momentum range (35-68) for Golden Cross approach"
 
-        return True, "Strong momentum setup with favorable risk-to-reward"
+        headroom_str = f" (+{((dema_100 - price)/price)*100.0:.1f}% room to 100 DEMA)" if (dema_100 and dema_100 > price) else ""
+
+        is_bullish_flag = stock_data.get("isBullish") in [True, "true"]
+        if is_bullish_flag:
+            return True, f"Moving-Average Live Scanner Confirmed: {gc_desc}{headroom_str}"
+
+        return True, f"{gc_desc} with favorable momentum{headroom_str}"
 
     # Prominent NIFTY 100 Largecap constituents
     LARGECAP_SYMBOLS = {
@@ -237,6 +268,8 @@ class StrategyEngine:
 
         total_score = round(headroom_score + mcap_score + rsi_score + vol_score, 1)
 
+        gc_type, gc_gap_val, gc_desc = cls.get_crossover_type(stock_data)
+
         breakdown = {
             "total_score": total_score,
             "headroom_pct": round(headroom_pct, 2),
@@ -246,7 +279,10 @@ class StrategyEngine:
             "rsi": round(rsi, 1) if rsi else None,
             "rsi_score": round(rsi_score, 1),
             "volume": int(vol),
-            "volume_score": round(vol_score, 1)
+            "volume_score": round(vol_score, 1),
+            "crossover_type": gc_type,
+            "crossover_label": gc_desc,
+            "golden_cross_gap": round(gc_gap_val, 2) if gc_gap_val < 900 else None
         }
 
         return total_score, breakdown

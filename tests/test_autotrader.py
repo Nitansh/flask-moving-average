@@ -95,6 +95,50 @@ def test_strategy_entry_scanner_flagged_still_checks_headroom():
     assert is_valid is True
     assert "Live Scanner Confirmed" in reason
 
+def test_strategy_entry_rejected_on_death_cross():
+    """Stock in a Death Cross regime (20 DEMA < 50 DEMA with gap > 3%) MUST be rejected."""
+    death_cross_stock = {
+        "symbol": "BEARISH_STOCK",
+        "price": 105.0,
+        "DMA_20": 90.0,
+        "DMA_50": 100.0, # 20 DEMA is 10% below 50 DEMA
+        "DMA_100": 120.0,
+        "rsi": 52.0
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(death_cross_stock)
+    assert is_valid is False
+    assert "No Golden Crossover" in reason
+    assert "Death Cross regime" in reason
+
+def test_strategy_entry_rejected_when_price_below_20_dema():
+    """Stock where price has fallen below 20 DEMA lacks breakout momentum and MUST be rejected."""
+    breakdown_stock = {
+        "symbol": "WEAK_STOCK",
+        "price": 95.0,
+        "DMA_20": 100.0, # Price < 20 DEMA
+        "DMA_50": 98.0,
+        "DMA_100": 115.0,
+        "rsi": 50.0
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(breakdown_stock)
+    assert is_valid is False
+    assert "Price" in reason and "below 20 DEMA" in reason
+
+def test_strategy_entry_qualifies_on_approaching_golden_cross():
+    """Stock with 20 DEMA converging <= 3% of 50 DEMA with price > 20 DEMA MUST qualify."""
+    approaching_stock = {
+        "symbol": "APPROACHING_STOCK",
+        "price": 102.0,
+        "DMA_20": 99.0,
+        "DMA_50": 100.0, # Gap is 1.0% (<= 3.0%)
+        "DMA_100": 115.0,
+        "rsi": 52.0,
+        "goldenCrossGap": 1.0
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(approaching_stock)
+    assert is_valid is True
+    assert "Approaching Golden Cross" in reason
+
 def test_tranche_scale_in_requires_minimum_price_dip():
     """Stock must pull back at least -3.0% below average buy price to add an averaging tranche."""
     position = {

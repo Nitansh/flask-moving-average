@@ -461,9 +461,12 @@ class BotRunner:
             hr_val = float(b.get("headroom_pct") or 0.0)
             dema_100_val = float(b.get("dema_100") or 0.0)
             rsi_val = float(b.get("rsi") or 0.0)
-            mcap_tier_val = b.get("mcap_tier", "Smallcap")
+            mcap_tier_val = str(b.get("mcap_tier", "SMALLCAP")).upper()
             vol_val = int(b.get("volume") or 0)
-            strat_val = "ONE_SHOT" if (idx % 2 == 1 and mcap_tier_val in ["Largecap", "Midcap"]) else "TRANCHE_AVERAGING"
+            strat_val = "ONE_SHOT" if (idx % 2 == 1 and mcap_tier_val in ["LARGECAP", "MIDCAP"]) else "TRANCHE_AVERAGING"
+            gc_type_val = b.get("crossover_type", "NO_CROSSOVER")
+            gc_label_val = b.get("crossover_label", "")
+            has_gc_val = gc_type_val in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"]
 
             if selected_count < can_open_slots:
                 item_status = "SELECTED_FOR_BUY"
@@ -477,6 +480,9 @@ class BotRunner:
                 "rank_score": round(float(c["rank_score"]), 1),
                 "composite_score": round(float(c["rank_score"]), 1),
                 "mcap_tier": mcap_tier_val,
+                "crossover_type": gc_type_val,
+                "crossover_label": gc_label_val,
+                "has_golden_cross": has_gc_val,
                 "price": price_val,
                 "current_price": price_val,
                 "headroom_pct": round(hr_val, 1),

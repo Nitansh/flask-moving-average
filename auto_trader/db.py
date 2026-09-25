@@ -324,6 +324,10 @@ def get_rankings(limit=100):
                 d["breakdown"] = json.loads(d["details"]) if d.get("details") else {}
             except Exception:
                 d["breakdown"] = {}
+            d["crossover_type"] = d["breakdown"].get("crossover_type", "NO_CROSSOVER")
+            d["crossover_label"] = d["breakdown"].get("crossover_label", "")
+            d["has_golden_cross"] = d["crossover_type"] in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"]
+            d["mcap_tier"] = str(d.get("mcap_tier") or d["breakdown"].get("mcap_tier", "SMALLCAP")).upper()
             rankings.append(d)
         return rankings
     except Exception as e:
