@@ -98,7 +98,7 @@ class StrategyEngine:
             if headroom_pct < min_headroom:
                 return False, f"Insufficient headroom to 100 DEMA (+{headroom_pct:.1f}% < minimum +{min_headroom:.1f}%). Current price must be lower than 100 DEMA by at least {min_headroom:.1f}% for profitable target booking."
         else:
-            headroom_pct = 0.0
+            return False, f"Missing 100 DEMA value (required: current price must be lower than 100 DEMA by at least {min_headroom:.1f}%)"
 
         # STRICT GOLDEN CROSSOVER ENFORCEMENT
         # Disqualifies any stock in Death Cross regime (20 DEMA < 50 DEMA without approaching convergence)

@@ -423,13 +423,17 @@ class BotRunner:
             is_valid, reason = StrategyEngine.evaluate_entry(stock)
             if is_valid:
                 rank_score, breakdown = StrategyEngine.calculate_rank_score(stock)
-                qualifying_candidates.append({
-                    "stock": stock,
-                    "symbol": symbol,
-                    "reason": reason,
-                    "rank_score": rank_score,
-                    "breakdown": breakdown
-                })
+                gc_type = breakdown.get("crossover_type", "NO_CROSSOVER")
+                hr_val = float(breakdown.get("headroom_pct") or 0.0)
+                min_hr = StrategyEngine.get_min_headroom()
+                if gc_type in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"] and hr_val >= min_hr:
+                    qualifying_candidates.append({
+                        "stock": stock,
+                        "symbol": symbol,
+                        "reason": reason,
+                        "rank_score": rank_score,
+                        "breakdown": breakdown
+                    })
             else:
                 if len(rejection_samples) < 4:
                     rejection_samples.append(f"{symbol}: {reason}")
