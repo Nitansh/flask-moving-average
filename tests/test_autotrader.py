@@ -725,6 +725,89 @@ def test_exit_does_not_trigger_same_price_exit_when_entered_below_50_dema():
     assert eval_res["reason"] == "Holding within active parameters"
 
 
+def test_exit_does_not_trigger_premature_200_dema_breakout_when_200_dema_is_below_entry():
+    """
+    Critical regression test: When a stock enters below 100 DEMA but 200 DEMA is already below entry price
+    (e.g. ASTERDM: Price=759.40, 200 DEMA=732.91, 20 DEMA=765.54), it must NOT trigger 200 DEMA breakout
+    in ENTRY phase or set an invalid stop loss above current market price.
+    """
+    from auto_trader.strategy import StrategyEngine
+    position = {
+        "symbol": "ASTERDM",
+        "initial_qty": 131,
+        "current_qty": 131,
+        "buy_price": 759.40,
+        "stop_loss": 732.82,
+        "phase": "ENTRY",
+        "days_at_100_dema": 0
+    }
+    current_dema = {
+        "dema_20": 765.54,
+        "dema_50": 776.28,
+        "dema_100": 765.34,
+        "dema_200": 732.91
+    }
+
+    # Cycle 1: Immediate evaluation at exact entry price
+    eval_1 = StrategyEngine.evaluate_exit(position, 759.40, current_dema)
+    assert eval_1["action"] == "NONE"
+    assert eval_1.get("new_phase") is None # Must stay in ENTRY phase
+    assert eval_1.get("new_stop_loss") is None # Must not raise SL above current price
+
+    # Cycle 2: Subsequent evaluation
+    eval_2 = StrategyEngine.evaluate_exit(position, 759.40, current_dema)
+    assert eval_2["action"] == "NONE"
+
+
+def test_corrupt_stop_loss_in_db_is_defensively_sanitized():
+    """
+    If a position previously had an errant stop loss saved in DB that is higher than hard_sl
+    or above market price (e.g. SL=765.54 when buy_price=759.40), evaluate_exit must clamp it
+    and NOT execute an instant same-price stop-out.
+    """
+    from auto_trader.strategy import StrategyEngine
+    position = {
+        "symbol": "ASTERDM",
+        "initial_qty": 131,
+        "current_qty": 131,
+        "buy_price": 759.40,
+        "stop_loss": 765.54, # Errant SL above market price from past bug
+        "phase": "ENTRY",
+        "days_at_100_dema": 0
+    }
+    current_dema = {
+        "dema_20": 765.54,
+        "dema_50": 776.28,
+        "dema_100": 765.34,
+        "dema_200": 732.91
+    }
+    eval_res = StrategyEngine.evaluate_exit(position, 759.40, current_dema)
+    assert eval_res["action"] == "NONE"
+
+
+def test_jkbank_does_not_exit_at_same_price():
+    """Regression test for J&KBANK (Price=146.10, 200 DEMA=138.58, 20 DEMA=147.74)."""
+    from auto_trader.strategy import StrategyEngine
+    position = {
+        "symbol": "J&KBANK",
+        "initial_qty": 684,
+        "current_qty": 684,
+        "buy_price": 146.10,
+        "stop_loss": 140.98,
+        "phase": "ENTRY",
+        "days_at_100_dema": 0
+    }
+    current_dema = {
+        "dema_20": 147.74,
+        "dema_50": 151.18,
+        "dema_100": 148.79,
+        "dema_200": 138.58
+    }
+    eval_res = StrategyEngine.evaluate_exit(position, 146.10, current_dema)
+    assert eval_res["action"] == "NONE"
+
+
+
 
 
 

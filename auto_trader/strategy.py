@@ -350,12 +350,20 @@ class StrategyEngine:
             new_phase: str or None
             reason: str
         """
-        buy_price = position["buy_price"]
-        current_qty = position["current_qty"]
-        initial_qty = position["initial_qty"]
-        stop_loss = position.get("stop_loss", buy_price * (1 - BotConfig.HARD_STOP_LOSS_PCT / 100.0))
+        buy_price = float(position["buy_price"])
+        current_qty = int(position["current_qty"])
+        initial_qty = int(position["initial_qty"])
+        hard_sl = buy_price * (1.0 - (BotConfig.HARD_STOP_LOSS_PCT / 100.0))
+        raw_sl = float(position.get("stop_loss") or hard_sl)
         phase = position.get("phase", "ENTRY")
-        days_at_100 = position.get("days_at_100_dema", 0)
+        days_at_100 = int(position.get("days_at_100_dema", 0))
+
+        # Defensive Sanity: Stop loss must never be higher than hard_sl in ENTRY phase,
+        # and must never be at or above current market price.
+        if phase == "ENTRY":
+            stop_loss = min(raw_sl, hard_sl)
+        else:
+            stop_loss = min(raw_sl, current_price * 0.995)
 
         dema_100 = current_dema.get("dema_100") or position.get("dema_100")
         dema_200 = current_dema.get("dema_200") or position.get("dema_200")
@@ -374,7 +382,7 @@ class StrategyEngine:
             }
 
         # ----------------------------------------------------
-        # 2. MEGA-RUNNER MODE (Active after 200 DEMA Breakout)
+        # 2. MEGA-RUNNER MODE (Active after 200 DEMA / 100 DEMA runner breakout)
         # ----------------------------------------------------
         if phase == "RUNNER_ACTIVE":
             # Trail with 20 DEMA: Exit only if price drops below 20 DEMA
@@ -385,8 +393,8 @@ class StrategyEngine:
                     "reason": f"Mega-Runner Exit: Closed below trailing 20 DEMA (₹{dema_20:.2f})",
                     "new_phase": "COMPLETED"
                 }
-            # Dynamically raise stop-loss as 20 DEMA climbs
-            updated_sl = max(stop_loss, dema_20 * 0.99) if dema_20 else stop_loss
+            # Dynamically raise stop-loss as 20 DEMA climbs, safely capped below current price
+            updated_sl = max(stop_loss, dema_20 * 0.99) if (dema_20 and (dema_20 * 0.99) < current_price) else stop_loss
             return {
                 "action": "NONE",
                 "ratio": 0.0,
@@ -395,25 +403,27 @@ class StrategyEngine:
             }
 
         # ----------------------------------------------------
-        # 3. 200 DEMA BREAKOUT CHECK (Trigger Mega-Runner)
+        # 3. MEGA-RUNNER BREAKOUT CHECK (Only available after Target 1 is locked!)
         # ----------------------------------------------------
-        if dema_200 and current_price >= (dema_200 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)):
-            # Stock broke cleanly above 200 DEMA! Transition to Mega-Runner
-            new_sl = max(stop_loss, dema_20 or dema_100 or buy_price)
-            return {
-                "action": "NONE",
-                "ratio": 0.0,
-                "new_phase": "RUNNER_ACTIVE",
-                "new_stop_loss": new_sl,
-                "reason": f"🚀 200 DEMA Breakout (> {BotConfig.DEMA_200_BREAKOUT_PCT}%). Activated Mega-Runner Mode trailing 20 DEMA!"
-            }
+        if phase == "TARGET_1_LOCKED":
+            # Check for breakout above 200 DEMA (if 200 DEMA was above buy price) or 100 DEMA breakout
+            target_breakout = dema_200 if (dema_200 and dema_200 > buy_price) else dema_100
+            if target_breakout and current_price >= (target_breakout * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)):
+                trail_candidate = max(buy_price * 1.005, (dema_20 * 0.99) if (dema_20 and dema_20 < current_price) else 0.0)
+                new_sl = max(stop_loss, min(current_price * 0.995, trail_candidate))
+                return {
+                    "action": "NONE",
+                    "ratio": 0.0,
+                    "new_phase": "RUNNER_ACTIVE",
+                    "new_stop_loss": new_sl,
+                    "reason": f"🚀 Breakout above resistance (₹{target_breakout:.2f}). Activated Mega-Runner Mode trailing 20 DEMA!"
+                }
 
         # ----------------------------------------------------
-        # 4. 100 DEMA RESISTANCE & PARTIAL PROFIT LOCKING
+        # 4. 100 DEMA RESISTANCE & PARTIAL PROFIT LOCKING (Only in ENTRY phase)
         # ----------------------------------------------------
         if dema_100 and phase == "ENTRY":
             # Only trigger 100 DEMA target booking if position was entered below 100 DEMA
-            # (If entered above 100 DEMA, stock is riding towards 200 DEMA, not hitting 100 DEMA resistance)
             if buy_price < dema_100:
                 resistance_price = dema_100 * (BotConfig.DEMA_100_RESISTANCE_PCT / 100.0)
                 breakout_price = dema_100 * (BotConfig.DEMA_200_BREAKOUT_PCT / 100.0)
@@ -427,8 +437,8 @@ class StrategyEngine:
                 if current_price >= resistance_price and current_price < breakout_price and gain_pct >= min_gain_for_booking:
                     # Sell 30% of the position to lock in profit
                     sell_qty = max(1, int(round(initial_qty * (BotConfig.PARTIAL_PROFIT_PCT / 100.0))))
-                    # Move Stop Loss to Breakeven (+0.5% buffer for brokerage/DP charges)
-                    breakeven_sl = buy_price * 1.005
+                    # Move Stop Loss to Breakeven (+0.5% buffer for brokerage/DP charges, safely capped below market price)
+                    breakeven_sl = min(current_price * 0.995, buy_price * 1.005)
 
                     return {
                         "action": "PARTIAL_SELL",
@@ -442,7 +452,7 @@ class StrategyEngine:
         # 5. 100 DEMA STAGNATION / TIME-DECAY EXIT
         # ----------------------------------------------------
         if phase == "TARGET_1_LOCKED" and days_at_100 >= BotConfig.STAGNATION_DAYS:
-            # Stagnated near 100 DEMA for > 3 days without breaking out
+            # Stagnated near 100 DEMA for > 3 days without breakout
             return {
                 "action": "FULL_SELL",
                 "ratio": 1.0,
