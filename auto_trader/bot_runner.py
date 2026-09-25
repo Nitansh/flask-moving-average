@@ -425,8 +425,10 @@ class BotRunner:
                 rank_score, breakdown = StrategyEngine.calculate_rank_score(stock)
                 gc_type = breakdown.get("crossover_type", "NO_CROSSOVER")
                 hr_val = float(breakdown.get("headroom_pct") or 0.0)
+                mcap_tier_val = str(breakdown.get("mcap_tier", "SMALLCAP")).upper()
                 min_hr = StrategyEngine.get_min_headroom()
-                if gc_type in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"] and hr_val >= min_hr:
+                allowed_tiers = getattr(BotConfig, "ALLOWED_MCAP_TIERS", ["LARGECAP", "MIDCAP"])
+                if gc_type in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"] and hr_val >= min_hr and mcap_tier_val in allowed_tiers:
                     qualifying_candidates.append({
                         "stock": stock,
                         "symbol": symbol,

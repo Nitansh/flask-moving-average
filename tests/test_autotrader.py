@@ -113,6 +113,7 @@ def test_strategy_entry_rejected_on_death_cross():
     """Stock in a Death Cross regime (20 DEMA < 50 DEMA with gap > 3%) MUST be rejected."""
     death_cross_stock = {
         "symbol": "BEARISH_STOCK",
+        "marketType": "Large Cap",
         "price": 105.0,
         "DMA_20": 90.0,
         "DMA_50": 100.0, # 20 DEMA is 10% below 50 DEMA
@@ -128,6 +129,7 @@ def test_strategy_entry_rejected_when_price_below_20_dema():
     """Stock where price has fallen below 20 DEMA lacks breakout momentum and MUST be rejected."""
     breakdown_stock = {
         "symbol": "WEAK_STOCK",
+        "marketType": "Large Cap",
         "price": 95.0,
         "DMA_20": 100.0, # Price < 20 DEMA
         "DMA_50": 98.0,
@@ -142,6 +144,7 @@ def test_strategy_entry_qualifies_on_approaching_golden_cross():
     """Stock with 20 DEMA converging <= 3% of 50 DEMA with price > 20 DEMA MUST qualify."""
     approaching_stock = {
         "symbol": "APPROACHING_STOCK",
+        "marketType": "Large Cap",
         "price": 102.0,
         "DMA_20": 99.0,
         "DMA_50": 100.0, # Gap is 1.0% (<= 3.0%)
@@ -152,6 +155,21 @@ def test_strategy_entry_qualifies_on_approaching_golden_cross():
     is_valid, reason = StrategyEngine.evaluate_entry(approaching_stock)
     assert is_valid is True
     assert "Approaching Golden Cross" in reason
+
+def test_strategy_entry_rejected_on_small_cap():
+    """Small Cap stocks must be excluded from AutoTrader entry."""
+    small_cap_stock = {
+        "symbol": "PENNY_STOCK",
+        "marketType": "Small Cap",
+        "price": 100.0,
+        "DMA_20": 95.0,
+        "DMA_50": 90.0,
+        "DMA_100": 110.0,
+        "rsi": 55.0
+    }
+    is_valid, reason = StrategyEngine.evaluate_entry(small_cap_stock)
+    assert is_valid is False
+    assert "Small Cap" in reason
 
 def test_tranche_scale_in_requires_minimum_price_dip(monkeypatch):
     """Stock must pull back at least -3.0% below average buy price to add an averaging tranche."""
@@ -524,7 +542,7 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
     update_bot_state(max_positions=1)
 
     candidates = [
-        # Candidate 0: Low-ranked Smallcap (lower headroom, low volume, sub-optimal RSI)
+        # Candidate 0: Low-ranked Midcap (lower headroom, low volume, sub-optimal RSI)
         {
             "symbol": "LOWRANK",
             "price": 100.0,
@@ -533,7 +551,7 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
             "DMA_100": 104.5, # +4.5% headroom (barely above 4%)
             "rsi": 65.0,
             "volume": 20000,
-            "marketType": "Small Cap"
+            "marketType": "Mid Cap"
         },
         # Candidate 1: High-ranked Largecap (high headroom, high volume, optimal RSI)
         {
@@ -556,6 +574,17 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
             "rsi": 56.0,
             "volume": 400000,
             "marketType": "Mid Cap"
+        },
+        # Candidate 3: Disqualified Smallcap (must never qualify or enter)
+        {
+            "symbol": "PENNY_SMALL",
+            "price": 50.0,
+            "DMA_20": 48.0,
+            "DMA_50": 45.0,
+            "DMA_100": 60.0,
+            "rsi": 50.0,
+            "volume": 1000000,
+            "marketType": "Small Cap"
         }
     ]
 
@@ -566,6 +595,8 @@ def test_scan_and_enter_prioritizes_top_ranked_candidate():
     assert len(open_pos) == 1
     # MUST have selected RELIANCE (top-ranked), not LOWRANK (first candidate in list)
     assert open_pos[0]["symbol"] == "RELIANCE"
+    assert all(p["symbol"] != "PENNY_SMALL" for p in open_pos)
+    assert all(r["symbol"] != "PENNY_SMALL" for r in bot_runner.ranked_opportunities)
 
 def test_fetch_live_scan_candidates_blocks_while_scanning(monkeypatch):
     """When moving-average scanner reports isScanning=True and wait_for_completion=False, candidate fetch must return empty."""

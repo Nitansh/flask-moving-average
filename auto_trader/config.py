@@ -41,6 +41,9 @@ class BotConfig:
     PARTIAL_PROFIT_PCT = 30.0 # Sell 30% of position at 100 DEMA
     STAGNATION_DAYS = 3 # If stalled at 100 DEMA for > 3 days, exit trade
 
+    # Market Cap Eligibility (Only LargeCap & MidCap allowed; SmallCap excluded)
+    ALLOWED_MCAP_TIERS = ["LARGECAP", "MIDCAP"]
+
     # 200 DEMA Breakout & Mega-Runner
     DEMA_200_BREAKOUT_PCT = 101.0 # % of 200 DEMA to trigger Mega-Runner mode
     RUNNER_TRAILING_MA = '20_DEMA' # Trail with 20 DEMA (close below 20 DEMA exits)

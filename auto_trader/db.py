@@ -342,8 +342,10 @@ def get_rankings(limit=100):
             d["has_golden_cross"] = d["crossover_type"] in ["GOLDEN_CROSS", "GOLDEN_CROSS_APPROACHING"]
             d["mcap_tier"] = str(d.get("mcap_tier") or d["breakdown"].get("mcap_tier", "SMALLCAP")).upper()
             hr_val = float(d.get("headroom_pct") or 0.0)
-            if d["has_golden_cross"] and hr_val >= 4.0:
+            if d["has_golden_cross"] and hr_val >= 4.0 and d["mcap_tier"] in ["LARGECAP", "MIDCAP"]:
                 rankings.append(d)
+        for idx, item in enumerate(rankings, 1):
+            item["rank"] = idx
         return rankings
     except Exception as e:
         print(f"Error getting rankings: {e}")

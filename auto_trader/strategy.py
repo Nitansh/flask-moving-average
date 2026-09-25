@@ -86,6 +86,11 @@ class StrategyEngine:
         if not (price and dema_20 and dema_50):
             return False, "Missing required Price, 20 DEMA, or 50 DEMA values"
 
+        # Market Cap Tier Enforcement (Only LargeCap & MidCap allowed; SmallCap excluded)
+        mcap_tier, _ = cls.get_market_cap_tier(stock_data)
+        if mcap_tier not in getattr(BotConfig, "ALLOWED_MCAP_TIERS", ["LARGECAP", "MIDCAP"]):
+            return False, f"Small Cap stocks are excluded from Auto-Trader (Current tier: {mcap_tier})"
+
         min_headroom = cls.get_min_headroom()
 
         # Enforce Minimum Headroom to 100 DEMA Resistance
