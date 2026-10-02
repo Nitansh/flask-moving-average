@@ -119,19 +119,7 @@ def get_industry_with_fallback(symbol):
         return INDUSTRY_MAP[symbol]
     if symbol in industry_cache:
         return industry_cache[symbol]
-    
-    # Fallback to yfinance (slow, so we cache it)
-    try:
-        print(f"[Industry Fallback] Fetching for {symbol}...")
-        info = yf.Ticker(f"{symbol}.NS").info
-        ind = info.get('industry', 'Unknown Sector')
-        industry_cache[symbol] = ind
-        # Save cache
-        with open(INDUSTRY_CACHE_FILE, 'w') as f:
-            json.dump(industry_cache, f)
-        return ind
-    except:
-        return 'Unknown Sector'
+    return 'Unknown Sector'
 
 # Redundant auth logic removed, now handled by Node Gateway on Render
 # from auth import verify_google_token, generate_jwt, login_required, admin_required, create_user, get_user, check_trial_status, ADMIN_EMAIL

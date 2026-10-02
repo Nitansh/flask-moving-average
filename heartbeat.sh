@@ -4,7 +4,13 @@
 
 # Auto-detect root directory based on where this script is located
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FLASK_DIR="$ROOT_DIR/flask-moving-average"
+if [ -f "$ROOT_DIR/app.py" ]; then
+    FLASK_DIR="$ROOT_DIR"
+elif [ -d "$ROOT_DIR/flask-moving-average" ]; then
+    FLASK_DIR="$ROOT_DIR/flask-moving-average"
+else
+    FLASK_DIR="$ROOT_DIR"
+fi
 LOG_DIR="/tmp"
 # Fallback for environment variables (used by Render to route traffic to this node)
 : "${RENDER_BACKEND_URL:=https://movingaverage-sh7s.onrender.com}"
@@ -142,24 +148,41 @@ if ! command -v cloudflared >/dev/null 2>&1; then
 fi
 
 # 3. Clone / Update Repository
-if [ ! -d "$FLASK_DIR" ]; then
+CODE_UPDATED=0
+if [ ! -d "$FLASK_DIR/.git" ]; then
     echo "Cloning flask-moving-average repository..."
     git clone https://github.com/Nitansh/flask-moving-average.git "$FLASK_DIR"
+    CODE_UPDATED=1
 else
-    echo "Repository exists. Pulling latest changes..."
-    cd "$FLASK_DIR" && git pull && cd "$ROOT_DIR"
+    echo "Checking for latest changes in $FLASK_DIR..."
+    cd "$FLASK_DIR" || exit
+    # Discard any local modifications from past runs so git update always succeeds
+    git reset --hard HEAD > /dev/null 2>&1 || true
+    git fetch origin main > /dev/null 2>&1 || true
+    LOCAL_HASH=$(git rev-parse HEAD 2>/dev/null)
+    REMOTE_HASH=$(git rev-parse origin/main 2>/dev/null)
+    if [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+        echo "  [UPDATE] New version detected ($LOCAL_HASH -> $REMOTE_HASH). Pulling latest code..."
+        git reset --hard origin/main
+        CODE_UPDATED=1
+    else
+        echo "  [OK] Repository is up to date ($LOCAL_HASH)."
+    fi
+    cd "$ROOT_DIR" || exit
 fi
 
 # 4. Setup Virtual Environment and Install Dependencies
 echo "Setting up Python virtual environment..."
 cd "$FLASK_DIR" || exit
 
+NEED_PIP_INSTALL=0
 # Create venv if missing or if pip is missing inside it
 if [ ! -d "venv" ] || { [ ! -f "venv/bin/pip" ] && [ ! -f "venv/Scripts/pip.exe" ]; }; then
     echo "Creating virtual environment..."
     # Ensure any broken venv is removed
     rm -rf venv
     python3 -m venv venv
+    NEED_PIP_INSTALL=1
     
     # If pip is still somehow missing, install it manually into the venv
     if [ ! -f "venv/bin/pip" ] && [ ! -f "venv/Scripts/pip.exe" ]; then
@@ -184,23 +207,14 @@ else
     VENV_PYTHON="python3"
 fi
 
-echo "Installing Python dependencies..."
-"$VENV_PYTHON" -m pip install --upgrade pip
-if [ -f "requirements.txt" ]; then
-    # Force Python 3.14 compatibility patches dynamically before pip install
-    if command -v sed >/dev/null 2>&1; then
-        sed -i 's/Flask>=3.0.0/Flask>=3.1.2/g' requirements.txt || true
-        sed -i 's/Werkzeug>=3.0.0/Werkzeug>=3.1.4/g' requirements.txt || true
-        sed -i 's/blinker==1.8.2/blinker>=1.9.0/g' requirements.txt || true
+if [ "$NEED_PIP_INSTALL" = "1" ] || [ "$CODE_UPDATED" = "1" ]; then
+    echo "Installing/updating Python dependencies..."
+    "$VENV_PYTHON" -m pip install --upgrade pip > /dev/null 2>&1 || true
+    if [ -f "requirements.txt" ]; then
+        "$VENV_PYTHON" -m pip install -r requirements.txt
     fi
-    "$VENV_PYTHON" -m pip install -r requirements.txt
-    # Double ensure just in case requirements.txt was hard-pinned
-    "$VENV_PYTHON" -m pip install Flask>=3.1.2 Werkzeug>=3.1.4 blinker>=1.9.0
-fi
-
-# Install Node dependencies if needed for local_balancer.js
-if [ -f "package.json" ]; then
-    if command -v npm >/dev/null 2>&1; then
+    # Install Node dependencies if needed for local_balancer.js
+    if [ -f "package.json" ] && command -v npm >/dev/null 2>&1; then
         echo "Installing Node dependencies..."
         npm install
     fi
@@ -268,27 +282,16 @@ echo "====================================================="
 
 STATUS=0
 
-# 1. Check Flask Backends (5001-5007)
-echo "Checking Flask Backends..."
-
-# Patch app.py to use 0.0.0.0 instead of :: to prevent IPv6 binding crashes on EC2
-# Patch local_balancer.js to use 127.0.0.1 instead of localhost for Node 18+ IPv6 bypass
-cd "$FLASK_DIR" || exit
-if command -v sed >/dev/null 2>&1; then
-    sed -i "s/host='::'/host='0.0.0.0'/g" app.py || true
-    sed -i "s/const HOST = 'localhost'/const HOST = '127.0.0.1'/g" local_balancer.js || true
+# If code was updated, terminate running backends so they restart with the fresh code
+if [ "$CODE_UPDATED" = "1" ]; then
+    echo "  [UPDATE] Code was updated! Stopping old backend processes to reload..."
+    pkill -9 -f "app.py" 2>/dev/null || true
+    pkill -9 -f "service_manager.py" 2>/dev/null || true
+    pkill -9 -f "local_balancer.js" 2>/dev/null || true
+    sleep 2
 fi
 
-# Neutralize the dangerous /healthcheck yfinance network call that causes timeout kills
-python3 -c "
-import os
-if os.path.exists('app.py'):
-    with open('app.py', 'r') as f:
-        c = f.read()
-    c = c.replace('ticker = yf.Ticker(\'RELIANCE.NS\')', 'return jsonify({\"status\": \"healthy\"}), 200\\n        ticker = yf.Ticker(\'RELIANCE.NS\')')
-    with open('app.py', 'w') as f:
-        f.write(c)
-" || true
+cd "$FLASK_DIR" || exit
 
 for port in 5001 5002 5003 5004 5005 5006 5007; do
     # Curl checks if the server responds gracefully (timeout 5s).
