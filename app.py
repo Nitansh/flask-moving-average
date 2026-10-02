@@ -102,16 +102,8 @@ def get_ex_dividend_date(symbol):
                     ex_date_str = ex_date.strftime('%Y-%m-%d')
                 else:
                     ex_date_str = str(ex_date)
-                    
-        # Method 2: Try ticker.info fallback if method 1 failed
-        if not ex_date_str:
-            info = ticker.info
-            ex_div_epoch = info.get('exDividendDate')
-            if ex_div_epoch:
-                dt = datetime.fromtimestamp(ex_div_epoch)
-                ex_date_str = dt.strftime('%Y-%m-%d')
     except Exception as e:
-        print(f"Error fetching ex_dividend_date for {symbol}: {e}")
+        pass
         
     with ex_dividend_cache_lock:
         ex_dividend_cache[symbol] = {
@@ -156,18 +148,33 @@ YF_HEADERS = {
 }
 
 
-YF_DOWNLOAD_LOCK = threading.Lock()
+YF_DOWNLOAD_SEMAPHORE = threading.BoundedSemaphore(8)
 
-# Replaced CustomNSEHistory with yfinance logic
-def custom_stock_df(symbol, from_date, to_date, series="EQ"):
+# Thread-safe in-memory cache for historical 1-year OHLCV DataFrames
+# symbol -> {'df': DataFrame, 'date': date.today(), 'timestamp': time.time()}
+DF_HISTORY_CACHE = {}
+DF_HISTORY_CACHE_LOCK = threading.Lock()
+
+# Replaced CustomNSEHistory with non-blocking yfinance logic with caching
+def custom_stock_df(symbol, from_date=None, to_date=None, series="EQ", use_cache=True):
     try:
+        today = datetime.now().date()
+        if use_cache:
+            with DF_HISTORY_CACHE_LOCK:
+                if symbol in DF_HISTORY_CACHE:
+                    cached = DF_HISTORY_CACHE[symbol]
+                    # Cache is valid for today (up to 4 hours or until market date changes)
+                    if cached.get('date') == today and (time.time() - cached.get('timestamp', 0) < 14400):
+                        return cached['df'].copy()
+
         ticker = f"{symbol}.NS"
         
-        # Acquire download lock to stagger simultaneous Yahoo requests
-        with YF_DOWNLOAD_LOCK:
-            time.sleep(0.15)
-            print(f"Downloading data for {ticker} from {from_date} to {to_date}")
-            df = yf.download(ticker, start=from_date, end=to_date, progress=False)
+        with YF_DOWNLOAD_SEMAPHORE:
+            print(f"Downloading data for {ticker} (timeout=10s)")
+            if from_date and to_date:
+                df = yf.download(ticker, start=from_date, end=to_date, progress=False, timeout=10)
+            else:
+                df = yf.download(ticker, period="1y", progress=False, timeout=10)
         
         if df.empty:
             print(f"No data found for {ticker}")
@@ -191,6 +198,15 @@ def custom_stock_df(symbol, from_date, to_date, series="EQ"):
         
         df['SYMBOL'] = symbol
         df = df.dropna(subset=['CLOSE'])
+
+        if not df.empty:
+            with DF_HISTORY_CACHE_LOCK:
+                DF_HISTORY_CACHE[symbol] = {
+                    'df': df,
+                    'date': today,
+                    'timestamp': time.time()
+                }
+
         return df
     except Exception as e:
         print(f"Error in custom_stock_df for {symbol}: {e}")
@@ -619,24 +635,144 @@ def get_history():
         print(f"Error fetching history for {symbol}: {e}")
         return jsonify({'error': str(e)}), 500
 
+def calculate_stock_indicators(stock, df, dma_list=None, price_diff_val=0.03, price_diff_bearish_val=0.05):
+    if dma_list is None:
+        dma_list = ['DMA_20', 'DMA_50', 'DMA_100', 'DMA_200']
+    response = {}
+    try:
+        if df.empty or len(df) < 14:
+            return response
+
+        rsi_series = TA.RSI(df)
+        last_rsi = rsi_series.iloc[-1]
+
+        cur_p = round(float(df.iloc[-1]['CLOSE']), 2)
+        prev_c = None
+        if len(df) >= 2:
+            try:
+                prev_c = round(float(df.iloc[-2]['CLOSE']), 2)
+            except Exception:
+                pass
+        if prev_c is None and 'PREV. CLOSE' in df.columns:
+            try:
+                prev_val = df.iloc[-1]['PREV. CLOSE']
+                if prev_val and not pd.isna(prev_val) and prev_val > 0:
+                    prev_c = round(float(prev_val), 2)
+            except Exception:
+                pass
+
+        chg = round(float(cur_p - prev_c), 2) if (cur_p and prev_c) else None
+        chg_pct = round(float(((cur_p - prev_c) / prev_c) * 100), 2) if (cur_p and prev_c and prev_c > 0) else None
+
+        response['symbol'] = stock
+        response['id'] = stock
+        response['price'] = cur_p
+        response['previousClose'] = prev_c
+        response['change'] = chg
+        response['changePercent'] = chg_pct
+        response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
+        
+        mcap_val = MCAP.get(stock, 0)
+        response['mcap'] = mcap_val
+        response['name'] = COMPANY_NAME.get(stock, stock)
+        response['industry'] = get_industry_with_fallback(stock)
+        response['volume'] = int(df.iloc[-1]['VOLUME']) if ('VOLUME' in df.columns and not pd.isna(df.iloc[-1]['VOLUME'])) else None
+        
+        if mcap_val > 20000:
+            response['marketType'] = 'Large Cap'
+        elif mcap_val > 5000:
+            response['marketType'] = 'Mid Cap'
+        else:
+            response['marketType'] = 'Small Cap'
+
+        response['url'] = f'https://www.screener.in/company/{stock}/consolidated/'
+        nse_stock = stock if stock.endswith('-EQ') else f"{stock}-EQ"
+        response['chart'] = f'https://charting.nseindia.com/?symbol={nse_stock}'
+        
+        for item in dma_list:
+            try:
+                period = int(item.split('_')[1])
+                dema_series = TA.DEMA(df, period)
+                last_dema = dema_series.iloc[-1]
+                response[item] = round(float(last_dema), 2) if not pd.isna(last_dema) else None
+            except Exception:
+                response[item] = None
+        
+        dma20 = response.get('DMA_20') or 0
+        dma50 = response.get('DMA_50') or 0
+        dma100 = response.get('DMA_100') or 0
+        price = response['price']
+     
+        # Bullish Condition
+        cond1 = response['mcap'] > MCAP_THRESHOLD
+        cond2 = price > dma20 and price > dma50 and price > dma100
+        diff1 = abs(dma20 - dma50)
+        limit1 = (price * price_diff_val)
+        cond3 = diff1 < limit1
+        diff2 = abs(dma50 - dma100)
+        limit2 = (price * price_diff_val)
+        cond4 = diff2 < limit2
+        
+        if cond1 and cond2 and cond3 and cond4:
+            response['isBullish'] = 'true'
+
+        # Bearish Condition
+        d20 = response.get('DMA_20')
+        d50 = response.get('DMA_50')
+        d100 = response.get('DMA_100')
+        
+        if (response['mcap'] > MCAP_THRESHOLD and 
+            d20 and d50 and d100 and
+            price < d20 and price < d50 and price < d100 and 
+            abs(price - d20) > (price * price_diff_bearish_val) and 
+            abs(d20 - d50) > (d20 * price_diff_bearish_val)):
+            response['isBearish'] = 'true'
+
+        # Golden Cross Approach Detection
+        if dma50 > 0 and dma20 > 0 and price > 0:
+            gap_20_50_pct = ((dma50 - dma20) / dma50) * 100
+            price_above_dma20_pct = ((price - dma20) / dma20) * 100
+            response['goldenCrossGap'] = round(gap_20_50_pct, 3)
+
+            if (cond1
+                and dma20 > 0 and dma50 > 0
+                and dma20 < dma50
+                and gap_20_50_pct < 3
+                and price > dma20
+                and response['rsi'] is not None
+                and 35 < response['rsi'] < 65):
+                response['isGoldenCrossApproaching'] = 'true'
+                response['goldenCrossData'] = {
+                    'gap_pct': round(gap_20_50_pct, 3),
+                    'price_above_dma20_pct': round(price_above_dma20_pct, 2),
+                    'rsi': round(float(response['rsi']), 2)
+                }
+
+    except Exception as e:
+        print(f"Error calculating indicators for {stock}: {e}")
+
+    return response
+
 @app.route('/price_diff')
 def get_dma_price_diff_bullish():
-    response = {}
     stock = request.args.get('symbol')
-    dma_list = request.args.get('dma').split(',')
-    price_diff_val = int( request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE ) ) * .01 
-    price_diff_bearish_val = int( request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE )) *.01
+    if not stock:
+        return jsonify({"error": "Symbol parameter is required"}), 400
+
+    dma_param = request.args.get('dma', 'DMA_20,DMA_50,DMA_100,DMA_200')
+    dma_list = dma_param.split(',')
+    price_diff_val = int(request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE)) * .01 
+    price_diff_bearish_val = int(request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE)) * .01
     
-    time_delta = int( request.args.get('timeDelta', 0 )) * TIME_DELTA
+    time_delta = int(request.args.get('timeDelta', 0)) * TIME_DELTA
     today = (datetime.now() + timedelta(days=time_delta)).date()
     from_date = today - timedelta(days=365)
     to_date = today + timedelta(days=1)
+    
     df = custom_stock_df(symbol=stock, from_date=from_date, to_date=to_date, series="EQ")
     if df.empty:
-        print(f"Skipping {stock}: No invalid historical data found.")
         return jsonify({})
     
-    # Append live price to the end (CHRONOLOGICAL) if last row is older than today
     last_row_date = df.iloc[-1]['DATE']
     if isinstance(last_row_date, pd.Timestamp):
         last_row_date = last_row_date.date()
@@ -647,133 +783,142 @@ def get_dma_price_diff_bullish():
         live_row = get_live_symbol_df(df.iloc[-1], stock, today)
         df = pd.concat([df, live_row], ignore_index=True)
     else:
-        # Update today's existing bar with live price
-        ticker_symbol = f"{stock}.NS"
-        ticker = yf.Ticker(ticker_symbol)
-        current_price = ticker.fast_info.last_price
-        if current_price is None or pd.isna(current_price) or current_price == 0:
-            current_price = ticker.info.get('currentPrice', df.iloc[-1]['CLOSE'])
-        df.loc[df.index[-1], 'CLOSE'] = current_price
-    
-    print(f"DEBUG: Processing {stock} | Price: {df.iloc[-1]['CLOSE']} | PriceDiff: {price_diff_val} | BearishDiff: {price_diff_bearish_val}")
-
-    rsi = TA.RSI(df)
-    last_rsi = rsi.iloc[-1]
-
-    cur_p = df.iloc[-1]['CLOSE']
-    prev_c = None
-    if len(df) >= 2:
         try:
-            prev_c = round(float(df.iloc[-2]['CLOSE']), 2)
+            ticker_symbol = f"{stock}.NS"
+            ticker = yf.Ticker(ticker_symbol)
+            current_price = ticker.fast_info.last_price
+            if current_price and not pd.isna(current_price) and current_price > 0:
+                df.loc[df.index[-1], 'CLOSE'] = current_price
         except Exception:
             pass
-    if prev_c is None and 'PREV. CLOSE' in df.columns:
-        try:
-            prev_val = df.iloc[-1]['PREV. CLOSE']
-            if prev_val and not pd.isna(prev_val) and prev_val > 0:
-                prev_c = round(float(prev_val), 2)
-        except Exception:
-            pass
-    chg = round(float(cur_p - prev_c), 2) if (cur_p and prev_c) else None
-    chg_pct = round(float(((cur_p - prev_c) / prev_c) * 100), 2) if (cur_p and prev_c) else None
 
-    response['symbol'] = stock
-    response['id'] = stock
-    response['price'] = cur_p
-    response['previousClose'] = prev_c
-    response['change'] = chg
-    response['changePercent'] = chg_pct
-    response['rsi'] = round(float(last_rsi), 2) if not pd.isna(last_rsi) else None
-    
-    mcap_val = MCAP.get(stock, 0)
-    response['mcap'] = mcap_val
-    response['name'] = COMPANY_NAME.get(stock, stock)
-    response['industry'] = get_industry_with_fallback(stock)
-    response['volume'] = int(df.iloc[-1]['VOLUME']) if 'VOLUME' in df.columns else None
-    
-    # Categorize Market Type based on MCAP (Cr)
-    if mcap_val > 20000:
-        response['marketType'] = 'Large Cap'
-    elif mcap_val > 5000:
-        response['marketType'] = 'Mid Cap'
-    else:
-        response['marketType'] = 'Small Cap'
+    response = calculate_stock_indicators(stock, df, dma_list, price_diff_val, price_diff_bearish_val)
+    return jsonify(response)
 
-    response['url'] = 'https://www.screener.in/company/'+ stock +'/consolidated/'
-    nse_stock = stock if stock.endswith('-EQ') else f"{stock}-EQ"
-    response['chart'] = f'https://charting.nseindia.com/?symbol={nse_stock}'
-    
-    for item in dma_list:
-        try:
-            dema_series = TA.DEMA(df, int(item.split('_')[1]))
-            last_dema = dema_series.iloc[-1]
-            response[item] = round(float(last_dema), 2) if not pd.isna(last_dema) else None
-        except Exception as e:
-            print(f"Error calculating {item} for {stock} in price_diff: {e}")
-            response[item] = None
-    
-    # Debug Logic
-    dma20 = response.get('DMA_20', 0)
-    dma50 = response.get('DMA_50', 0)
-    dma100 = response.get('DMA_100', 0)
-    price = response['price']
- 
-    # Bullish Condition Debug
-    cond1 = response['mcap'] > MCAP_THRESHOLD
-    cond2 = price > dma20 and price > dma50 and price > dma100
-    diff1 = abs(dma20 - dma50)
-    limit1 = (price * price_diff_val)
-    cond3 = diff1 < limit1
-    diff2 = abs(dma50 - dma100)
-    limit2 = (price * price_diff_val)
-    cond4 = diff2 < limit2
-    
-    if cond1 and cond2 and cond3 and cond4:
-        response['isBullish'] = 'true'
-        print(f"MATCH BULLISH: {stock}")
-    else:
-        # print(f"FAIL BULLISH {stock}: MCAP={cond1} PRICE>DMA={cond2} DIFF1({diff1:.2f}<{limit1:.2f})={cond3} DIFF2({diff2:.2f}<{limit2:.2f})={cond4}")
-        pass
+@app.route('/batch_price_diff', methods=['GET', 'POST'])
+@app.route('/api/scan/batch', methods=['GET', 'POST'])
+def batch_price_diff():
+    try:
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            symbols = data.get('symbols', [])
+            dma_param = data.get('dma', ['DMA_20', 'DMA_50', 'DMA_100', 'DMA_200'])
+            if isinstance(dma_param, str):
+                dma_list = dma_param.split(',')
+            else:
+                dma_list = dma_param
+            price_diff_val = int(data.get('priceDiff', PRICE_DIFF_PERCENTAGE)) * .01
+            price_diff_bearish_val = int(data.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE)) * .01
+            time_delta = int(data.get('timeDelta', 0)) * TIME_DELTA
+        else:
+            symbols_param = request.args.get('symbols', '')
+            symbols = [s.strip().upper() for s in symbols_param.split(',') if s.strip()]
+            dma_list = request.args.get('dma', 'DMA_20,DMA_50,DMA_100,DMA_200').split(',')
+            price_diff_val = int(request.args.get('priceDiff', PRICE_DIFF_PERCENTAGE)) * .01
+            price_diff_bearish_val = int(request.args.get('priceDiffBullish', PRICE_DIFF_BEARISH_PERCENTAGE)) * .01
+            time_delta = int(request.args.get('timeDelta', 0)) * TIME_DELTA
 
-    # Bearish: Price well below DMAs (breakdown/extension)
-    d20 = response.get('DMA_20')
-    d50 = response.get('DMA_50')
-    d100 = response.get('DMA_100')
-    
-    if (response['mcap'] > MCAP_THRESHOLD and 
-        d20 and d50 and d100 and
-        response['price'] < d20 and response['price'] < d50 and response['price'] < d100 and 
-        abs(response['price'] - d20) > (response['price'] * price_diff_bearish_val) and 
-        abs(d20 - d50) > (d20 * price_diff_bearish_val)):
-        response['isBearish'] = 'true'
-        print(f"MATCH BEARISH: {stock}")
+        if not symbols:
+            return jsonify({"results": [], "count": 0, "error": "No symbols provided"}), 400
 
-    # --- Golden Cross Approach Detection ---
-    # Detect stocks where DMA20 is converging toward DMA50 from below
-    # (golden cross hasn't happened yet but is approaching)
-    if dma50 > 0 and dma20 > 0 and price > 0:
-        gap_20_50_pct = ((dma50 - dma20) / dma50) * 100  # positive = DMA20 below DMA50
-        price_above_dma20_pct = ((price - dma20) / dma20) * 100
+        today = (datetime.now() + timedelta(days=time_delta)).date()
+        results = []
+        
+        yf_tickers = [f"{s}.NS" for s in symbols]
+        
+        with YF_DOWNLOAD_SEMAPHORE:
+            print(f"[Batch Scan] Downloading batch of {len(symbols)} stocks...")
+            batch_df = yf.download(yf_tickers, period="1y", group_by="ticker", timeout=15, progress=False, threads=True)
 
-        response['goldenCrossGap'] = round(gap_20_50_pct, 3)
+        is_multi = isinstance(batch_df.columns, pd.MultiIndex) and batch_df.columns.nlevels > 1
 
-        # Golden cross approaching: DMA20 below DMA50, gap < 3%, price pushing above DMA20, RSI has room
-        if (cond1  # mcap > threshold
-            and dma20 > 0 and dma50 > 0 # ensure valid DMAs exist
-            and dma20 < dma50  # hasn't crossed yet
-            and gap_20_50_pct < 3  # close to crossing
-            and price > dma20  # price momentum building
-            and response['rsi'] is not None # handle None RSI
-            and response['rsi'] > 35 and response['rsi'] < 65):  # not overbought, room to run
-            response['isGoldenCrossApproaching'] = 'true'
-            response['goldenCrossData'] = {
-                'gap_pct': round(gap_20_50_pct, 3),
-                'price_above_dma20_pct': round(price_above_dma20_pct, 2),
-                'rsi': round(float(response['rsi']), 2)
-            }
-            print(f"MATCH GOLDEN CROSS APPROACHING: {stock} | Gap: {gap_20_50_pct:.3f}% | PriceAboveDMA20: {price_above_dma20_pct:.2f}%")
+        for stock in symbols:
+            tick = f"{stock}.NS"
+            try:
+                if is_multi:
+                    if tick not in batch_df.columns.levels[0]:
+                        continue
+                    df = batch_df[tick].dropna(subset=['Close']).copy()
+                else:
+                    df = batch_df.dropna(subset=['Close']).copy()
+                
+                if df.empty or len(df) < 14:
+                    continue
 
-    return jsonify( response )
+                df = df.reset_index().rename(columns={
+                    'Date': 'DATE',
+                    'Open': 'OPEN',
+                    'High': 'HIGH',
+                    'Low': 'LOW',
+                    'Close': 'CLOSE',
+                    'Volume': 'VOLUME'
+                })
+                df['SYMBOL'] = stock
+
+                # Cache DataFrame in memory for subsequent fast /live lookups
+                with DF_HISTORY_CACHE_LOCK:
+                    DF_HISTORY_CACHE[stock] = {
+                        'df': df.copy(),
+                        'date': today,
+                        'timestamp': time.time()
+                    }
+
+                res = calculate_stock_indicators(stock, df, dma_list, price_diff_val, price_diff_bearish_val)
+                if res and res.get('price'):
+                    results.append(res)
+            except Exception as stock_err:
+                print(f"[Batch Scan Error] {stock}: {stock_err}")
+
+        return jsonify({
+            "results": results,
+            "count": len(results),
+            "requested": len(symbols)
+        }), 200
+
+    except Exception as e:
+        print(f"Error in batch_price_diff: {e}")
+        return jsonify({"error": str(e), "results": []}), 500
+
+@app.route('/api/live/batch', methods=['GET', 'POST'])
+def get_live_batch():
+    try:
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            symbols = data.get('symbols', [])
+        else:
+            symbols_param = request.args.get('symbols', '')
+            symbols = [s.strip().upper() for s in symbols_param.split(',') if s.strip()]
+
+        if not symbols:
+            return jsonify({})
+
+        quotes = {}
+        for sym in symbols:
+            try:
+                t = yf.Ticker(f"{sym}.NS")
+                price = t.fast_info.last_price
+                prev = t.fast_info.previous_close
+                vol = t.fast_info.last_volume
+                if price and not pd.isna(price):
+                    cur_p = round(float(price), 2)
+                    prev_c = round(float(prev), 2) if (prev and not pd.isna(prev)) else cur_p
+                    chg = round(cur_p - prev_c, 2)
+                    chg_pct = round(((cur_p - prev_c) / prev_c) * 100, 2) if prev_c > 0 else 0
+                    quotes[sym] = {
+                        'symbol': sym,
+                        'currentPrice': cur_p,
+                        'price': cur_p,
+                        'previousClose': prev_c,
+                        'change': chg,
+                        'changePercent': chg_pct,
+                        'volume': int(vol) if vol and not pd.isna(vol) else 0
+                    }
+            except Exception:
+                pass
+
+        return jsonify(quotes)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/video/download/<filename>')
 def download_video(filename):
@@ -1057,5 +1202,5 @@ except Exception as e:
 if __name__ == '__main__':
     import os
     port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5001)
-    serve(app, host='0.0.0.0', port=int(port), threads=4)
+    serve(app, host='0.0.0.0', port=int(port), threads=16)
 

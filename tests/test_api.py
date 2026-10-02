@@ -31,3 +31,33 @@ def test_mcap_index(client):
     data = json.loads(response.data)
     assert data['symbol'] == 'RELIANCE'
     assert 'DMA_20' in data
+
+def test_price_diff(client):
+    """Test /price_diff single stock endpoint."""
+    response = client.get('/price_diff?symbol=RELIANCE&dma=DMA_20,DMA_50')
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data.get('symbol') == 'RELIANCE'
+    assert 'price' in data
+    assert 'DMA_20' in data
+
+def test_batch_price_diff(client):
+    """Test /batch_price_diff endpoint with multiple symbols."""
+    payload = {
+        "symbols": ["RELIANCE", "TCS"],
+        "dma": ["DMA_20", "DMA_50"]
+    }
+    response = client.post('/batch_price_diff', json=payload)
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert "results" in data
+    assert len(data["results"]) >= 1
+    symbols_returned = [r["symbol"] for r in data["results"]]
+    assert "RELIANCE" in symbols_returned or "TCS" in symbols_returned
+
+def test_live_batch(client):
+    """Test /api/live/batch endpoint for portfolio fast quotes."""
+    response = client.get('/api/live/batch?symbols=RELIANCE,TCS')
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert isinstance(data, dict)
