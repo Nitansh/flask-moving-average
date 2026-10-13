@@ -1187,6 +1187,30 @@ try:
 except Exception as e:
     print(f"Notice: Auto-trader endpoints initialization error: {e}")
 
+
+# =====================================================================
+# NIFTY OI BULL VS BEAR SENTIMENT ENGINE ENDPOINTS
+# =====================================================================
+@app.route('/api/nifty-oi-sentiment', methods=['GET'])
+def get_nifty_oi_sentiment_route():
+    try:
+        from nifty_oi_service import get_nifty_sentiment_payload
+        expiry = request.args.get('expiry', None)
+        strike_range = int(request.args.get('range', 1000))
+        bear_target = float(request.args.get('bear_target', 20000))
+        bull_target = float(request.args.get('bull_target', 28000))
+
+        payload = get_nifty_sentiment_payload(
+            expiry=expiry,
+            strike_range=strike_range,
+            bear_target=bear_target,
+            bull_target=bull_target
+        )
+        return jsonify(payload), 200
+    except Exception as e:
+        print(f"Error in /api/nifty-oi-sentiment: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == '__main__':
     import os
     port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5001)
