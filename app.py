@@ -580,7 +580,7 @@ def get_dma():
 def get_history():
     try:
         symbol = request.args.get('symbol')
-        days = int(request.args.get('days', 365))
+        days = int(request.args.get('days', 730))
         
         to_date = datetime.now()
         from_date = to_date - timedelta(days=days)
