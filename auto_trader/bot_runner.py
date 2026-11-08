@@ -33,8 +33,11 @@ class BotRunner:
         self.last_ranking_time = None
 
     def is_market_open(self):
-        """Checks if current time is within Indian Stock Market hours (09:15 - 15:30 IST, Mon-Fri)."""
+        """Checks if current time is within Indian Stock Market hours (09:15 - 15:30 IST, Mon-Fri, or special Muhurat sessions)."""
         now = datetime.now(IST)
+        # Special Session / Muhurat Trading override for today (2026-11-08)
+        if now.year == 2026 and now.month == 11 and now.day == 8:
+            return True
         # Weekdays: 0 (Monday) to 4 (Friday)
         if now.weekday() > 4:
             return False
