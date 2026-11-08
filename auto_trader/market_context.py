@@ -39,6 +39,14 @@ def get_nifty_market_context(force_refresh=False, max_age_seconds=120):
             except Exception:
                 pass
 
+        try:
+            from live_data_helper import get_realtime_price
+            real_p = get_realtime_price("NIFTY")
+            if real_p and real_p > 0:
+                price = real_p
+        except Exception:
+            pass
+
         hist = ticker.history(period="1y")
         if hist.empty:
             return _NIFTY_CACHE["data"]

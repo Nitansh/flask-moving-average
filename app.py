@@ -16,6 +16,7 @@ from publish_service import VeoVideoGenerator, TelegramPublisher, load_config
 import asyncio
 import threading
 from flask_cors import CORS
+from live_data_helper import get_realtime_price, fetch_live_quote_gf, is_special_session_today
 
 # Simple route/endpoint caching decorator
 def cache_endpoint(ttl_seconds=300):
@@ -147,7 +148,7 @@ DF_HISTORY_CACHE_LOCK = threading.Lock()
 def custom_stock_df(symbol, from_date=None, to_date=None, series="EQ", use_cache=True):
     try:
         today = datetime.now().date()
-        if use_cache:
+        if use_cache and not is_special_session_today():
             with DF_HISTORY_CACHE_LOCK:
                 if symbol in DF_HISTORY_CACHE:
                     cached = DF_HISTORY_CACHE[symbol]
@@ -219,6 +220,13 @@ def get_live_symbol_df(last_row, symbol, today):
 
         if last_price is None:
             last_price = ticker.info.get('currentPrice', 0)
+
+        # Real-time feed priority (Google Finance during special sessions or when secondary feed lags)
+        gf_quote = fetch_live_quote_gf(symbol)
+        if gf_quote and gf_quote.get('price'):
+            gf_p = gf_quote['price']
+            if is_special_session_today() or last_price is None or last_price == 0 or abs(gf_p - (last_price or 0)) > 0.05:
+                last_price = gf_p
 
         open_price = fast_info.open
         if open_price is None:
@@ -313,6 +321,19 @@ def get_live_stock():
                 current_price = round(float(current_price), 2)
             else:
                 current_price = 0
+
+            # Real-time primary feed check (Google Finance)
+            gf_quote = fetch_live_quote_gf(symbol)
+            if gf_quote and gf_quote.get('price'):
+                gf_p = gf_quote['price']
+                if is_special_session_today() or current_price == 0 or abs(gf_p - current_price) > 0.05:
+                    current_price = gf_p
+                    if gf_quote.get('previousClose'):
+                        prev_close = gf_quote['previousClose']
+                    if gf_quote.get('change'):
+                        change = gf_quote['change']
+                    if gf_quote.get('changePercent'):
+                        change_percent = gf_quote['changePercent']
 
             # Derive previous close for daily change & P&L calculations
             prev_close = None
@@ -521,7 +542,10 @@ def get_dma():
             ticker_symbol = f"{stock}.NS"
             ticker = yf.Ticker(ticker_symbol)
             current_price = ticker.fast_info.last_price
-            if current_price is None or pd.isna(current_price) or current_price == 0:
+            real_p = get_realtime_price(stock)
+            if real_p and (is_special_session_today() or current_price is None or current_price == 0 or abs(real_p - (current_price or 0)) > 0.05):
+                current_price = real_p
+            elif current_price is None or pd.isna(current_price) or current_price == 0:
                 current_price = ticker.info.get('currentPrice', df.iloc[-1]['CLOSE'])
             df.loc[df.index[-1], 'CLOSE'] = current_price
         
@@ -775,6 +799,9 @@ def get_dma_price_diff_bullish():
             ticker_symbol = f"{stock}.NS"
             ticker = yf.Ticker(ticker_symbol)
             current_price = ticker.fast_info.last_price
+            real_p = get_realtime_price(stock)
+            if real_p and (is_special_session_today() or current_price is None or current_price == 0 or abs(real_p - (current_price or 0)) > 0.05):
+                current_price = real_p
             if current_price and not pd.isna(current_price) and current_price > 0:
                 df.loc[df.index[-1], 'CLOSE'] = current_price
         except Exception:
@@ -887,6 +914,16 @@ def get_live_batch():
                 price = t.fast_info.last_price
                 prev = t.fast_info.previous_close
                 vol = t.fast_info.last_volume
+
+                # Check Google Finance real-time quote
+                gf_quote = fetch_live_quote_gf(sym)
+                if gf_quote and gf_quote.get('price'):
+                    gf_p = gf_quote['price']
+                    if is_special_session_today() or price is None or abs(gf_p - (price or 0)) > 0.05:
+                        price = gf_p
+                        if gf_quote.get('previousClose'):
+                            prev = gf_quote['previousClose']
+
                 if price and not pd.isna(price):
                     cur_p = round(float(price), 2)
                     prev_c = round(float(prev), 2) if (prev and not pd.isna(prev)) else cur_p

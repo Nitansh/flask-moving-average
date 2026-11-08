@@ -134,6 +134,15 @@ class BotRunner:
             except Exception:
                 live_price = current_price
 
+            # Real-time Google Finance feed check
+            try:
+                from live_data_helper import get_realtime_price, is_special_session_today
+                real_p = get_realtime_price(symbol)
+                if real_p and (is_special_session_today() or abs(real_p - live_price) > 0.05):
+                    live_price = real_p
+            except Exception:
+                pass
+
             dema_data = {
                 "dema_20": pos.get("dema_20"),
                 "dema_50": pos.get("dema_50"),
