@@ -1189,18 +1189,25 @@ except Exception as e:
 
 
 # =====================================================================
-# NIFTY OI BULL VS BEAR SENTIMENT ENGINE ENDPOINTS
+# NIFTY & ALL F&O STOCKS OI BULL VS BEAR SENTIMENT ENGINE ENDPOINTS
 # =====================================================================
 @app.route('/api/nifty-oi-sentiment', methods=['GET'])
+@app.route('/api/oi-sentiment', methods=['GET'])
 def get_nifty_oi_sentiment_route():
     try:
         from nifty_oi_service import get_nifty_sentiment_payload
+        symbol = request.args.get('symbol', 'NIFTY')
         expiry = request.args.get('expiry', None)
-        strike_range = int(request.args.get('range', 1000))
-        bear_target = float(request.args.get('bear_target', 20000))
-        bull_target = float(request.args.get('bull_target', 28000))
+        range_param = request.args.get('range_strikes', request.args.get('range', 12))
+        strike_range = int(range_param)
+        
+        bear_arg = request.args.get('bear_target', None)
+        bull_arg = request.args.get('bull_target', None)
+        bear_target = float(bear_arg) if bear_arg is not None else None
+        bull_target = float(bull_arg) if bull_arg is not None else None
 
         payload = get_nifty_sentiment_payload(
+            symbol=symbol,
             expiry=expiry,
             strike_range=strike_range,
             bear_target=bear_target,
