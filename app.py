@@ -647,6 +647,74 @@ def get_history():
         print(f"Error fetching history for {symbol}: {e}")
         return jsonify({'error': str(e)}), 500
 
+def compute_volume_profile_va(df, lookback_bars=22):
+    """
+    Computes genuine Volume Profile Value Area (POC, VAH, VAL) from OHLCV DataFrame.
+    Uses typical price (H+L+C)/3 and volume weighted distribution across 21 price buckets.
+    """
+    try:
+        if df is None or df.empty or len(df) == 0:
+            return None
+        sub = df.iloc[-lookback_bars:].copy()
+        if sub.empty:
+            return None
+
+        close_col = 'CLOSE' if 'CLOSE' in sub.columns else ('Close' if 'Close' in sub.columns else None)
+        high_col = 'HIGH' if 'HIGH' in sub.columns else ('High' if 'High' in sub.columns else None)
+        low_col = 'LOW' if 'LOW' in sub.columns else ('Low' if 'Low' in sub.columns else None)
+        vol_col = 'VOLUME' if 'VOLUME' in sub.columns else ('Volume' if 'Volume' in sub.columns else None)
+
+        if not close_col:
+            return None
+
+        closes = pd.to_numeric(sub[close_col], errors='coerce').dropna()
+        if closes.empty:
+            return None
+
+        highs = pd.to_numeric(sub[high_col], errors='coerce').fillna(closes) if high_col else closes
+        lows = pd.to_numeric(sub[low_col], errors='coerce').fillna(closes) if low_col else closes
+        volumes = pd.to_numeric(sub[vol_col], errors='coerce').fillna(1.0) if vol_col else pd.Series(1.0, index=sub.index)
+        volumes = volumes.apply(lambda v: v if (v is not None and not pd.isna(v) and v > 0) else 1.0)
+
+        min_p = float(lows.min())
+        max_p = float(highs.max())
+        if pd.isna(min_p) or pd.isna(max_p) or min_p >= max_p:
+            single_p = float(closes.iloc[-1])
+            return {'poc': round(single_p, 2), 'pocPrice': round(single_p, 2), 'vah': round(single_p, 2), 'val': round(single_p, 2)}
+
+        bins = np.linspace(min_p, max_p, 22)
+        typ_price = (highs + lows + closes) / 3.0
+        indices = np.digitize(typ_price, bins) - 1
+        indices = np.clip(indices, 0, len(bins) - 2)
+
+        bin_vols = np.zeros(len(bins) - 1)
+        for idx, v in zip(indices, volumes):
+            bin_vols[idx] += float(v)
+
+        bin_centers = (bins[:-1] + bins[1:]) / 2.0
+        poc_idx = int(np.argmax(bin_vols))
+        poc = float(bin_centers[poc_idx])
+
+        total_vol = float(bin_vols.sum())
+        target_vol = total_vol * 0.70
+        sorted_indices = np.argsort(-bin_vols)
+        va_indices = []
+        run_vol = 0.0
+        for idx in sorted_indices:
+            va_indices.append(idx)
+            run_vol += bin_vols[idx]
+            if run_vol >= target_vol:
+                break
+
+        va_prices = bin_centers[va_indices]
+        val = round(float(va_prices.min()), 2)
+        vah = round(float(va_prices.max()), 2)
+        poc = round(float(poc), 2)
+
+        return {'poc': poc, 'pocPrice': poc, 'vah': vah, 'val': val}
+    except Exception as e:
+        return None
+
 def calculate_stock_indicators(stock, df, dma_list=None, price_diff_val=0.03, price_diff_bearish_val=0.05):
     if dma_list is None:
         dma_list = ['DMA_20', 'DMA_50', 'DMA_100', 'DMA_200']
@@ -759,6 +827,23 @@ def calculate_stock_indicators(stock, df, dma_list=None, price_diff_val=0.03, pr
                     'price_above_dma20_pct': round(price_above_dma20_pct, 2),
                     'rsi': round(float(response['rsi']), 2)
                 }
+
+        # Value Area (POC, VAH, VAL) from OHLCV distribution
+        va_month = compute_volume_profile_va(df, lookback_bars=22)
+        va_week = compute_volume_profile_va(df, lookback_bars=5)
+        va_day = compute_volume_profile_va(df, lookback_bars=1)
+
+        if va_month:
+            response['month'] = va_month
+            response['poc'] = va_month['poc']
+            response['pocPrice'] = va_month['pocPrice']
+            response['vah'] = va_month['vah']
+            response['val'] = va_month['val']
+        if va_week:
+            response['week'] = va_week
+        if va_day:
+            response['today'] = va_day
+            response['day'] = va_day
 
     except Exception as e:
         print(f"Error calculating indicators for {stock}: {e}")
