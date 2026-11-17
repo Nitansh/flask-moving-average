@@ -758,6 +758,15 @@ def calculate_stock_indicators(stock, df, dma_list=None, price_diff_val=0.03, pr
         response['industry'] = get_industry_with_fallback(stock)
         response['volume'] = int(df.iloc[-1]['VOLUME']) if ('VOLUME' in df.columns and not pd.isna(df.iloc[-1]['VOLUME'])) else None
         
+        cur_low = round(float(df.iloc[-1]['LOW']), 2) if ('LOW' in df.columns and not pd.isna(df.iloc[-1]['LOW'])) else None
+        cur_high = round(float(df.iloc[-1]['HIGH']), 2) if ('HIGH' in df.columns and not pd.isna(df.iloc[-1]['HIGH'])) else None
+        cur_open = round(float(df.iloc[-1]['OPEN']), 2) if ('OPEN' in df.columns and not pd.isna(df.iloc[-1]['OPEN'])) else None
+        response['dayLow'] = cur_low
+        response['low'] = cur_low
+        response['dayHigh'] = cur_high
+        response['high'] = cur_high
+        response['open'] = cur_open
+        
         if mcap_val > 20000:
             response['marketType'] = 'Large Cap'
         elif mcap_val > 5000:
