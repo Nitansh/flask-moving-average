@@ -1349,6 +1349,86 @@ def get_nifty_oi_sentiment_route():
         print(f"Error in /api/nifty-oi-sentiment: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+# =====================================================================
+# DEMA EXPLAINER VIDEO AUDIO SYNTHESIS ENGINE (EDGE-TTS)
+# =====================================================================
+@app.route('/api/explainer/voices', methods=['GET'])
+def get_explainer_voices():
+    return jsonify({
+        "voices": [
+            {"id": "en-IN-PrabhatNeural", "name": "Prabhat (Indian English Male - Standard)", "lang": "en-IN", "gender": "Male"},
+            {"id": "en-IN-NeerjaNeural", "name": "Neerja (Indian English Female)", "lang": "en-IN", "gender": "Female"},
+            {"id": "en-US-ChristopherNeural", "name": "Christopher (US English Male)", "lang": "en-US", "gender": "Male"},
+            {"id": "en-US-JennyNeural", "name": "Jenny (US English Female)", "lang": "en-US", "gender": "Female"},
+        ],
+        "default": "en-IN-PrabhatNeural"
+    }), 200
+
+
+@app.route('/api/explainer/audio', methods=['GET', 'POST'])
+def synthesize_explainer_audio():
+    try:
+        import asyncio
+        import ssl
+        import re
+        from flask import Response
+        import edge_tts
+
+        # Configure SSL context for corporate/Windows environments
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            edge_tts.voices._SSL_CTX = ctx
+            edge_tts.communicate._SSL_CTX = ctx
+        except Exception:
+            pass
+
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            text = (payload.get('text') or '').strip()
+            voice = payload.get('voice', 'en-IN-PrabhatNeural')
+            symbol = payload.get('symbol', 'STOCK').upper()
+        else:
+            text = (request.args.get('text') or '').strip()
+            voice = request.args.get('voice', 'en-IN-PrabhatNeural')
+            symbol = (request.args.get('symbol') or 'STOCK').upper()
+
+        if not text:
+            return jsonify({"status": "error", "message": "Text parameter is required for audio synthesis"}), 400
+
+        # Run async edge_tts synthesis
+        async def _synthesize():
+            communicate = edge_tts.Communicate(text, voice)
+            audio_data = bytearray()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data.extend(chunk["data"])
+            return bytes(audio_data)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            audio_bytes = loop.run_until_complete(_synthesize())
+        finally:
+            loop.close()
+
+        clean_symbol = re.sub(r'[^A-Za-z0-9_]', '', symbol)
+        return Response(
+            audio_bytes,
+            mimetype="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{clean_symbol}_explainer.mp3"',
+                "Content-Type": "audio/mpeg",
+                "Cache-Control": "public, max-age=86400"
+            }
+        )
+    except Exception as e:
+        print(f"Error synthesizing explainer audio: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == '__main__':
     import os
     port = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('PORT', 5001)
